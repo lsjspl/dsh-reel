@@ -23,6 +23,10 @@
         # named by the REEL_ROOTS environment variable, else
         # $DSH_HOME/media when it exists.
         roots: []
+        # Optional: where poster frames and hover previews are cached. Empty
+        # means the OS temp directory. Keep it outside the media roots, or the
+        # cache files will show up in the gallery (the plugin logs a warning).
+        # cacheDir: 'D:\dsh-cache'
         # Set false to let non-loopback browsers on a LAN bind reach the
         # viewer; by default it reuses dsh's own browser-trust fence.
         requireTrustedRequest: true

@@ -40,7 +40,18 @@ mkdirSync(outside, { recursive: true })
 const bytes = (size) => Buffer.alloc(size, 0x41)
 
 writeFileSync(join(mediaRoot, 'a.mp4'), bytes(3000))
-writeFileSync(join(mediaRoot, 'b.jpg'), bytes(1500))
+// 真 JPEG（1×1 白图，base64）：图片缩略图走 ffmpeg 解码，全零字节解不开。
+writeFileSync(join(mediaRoot, 'b.jpg'), Buffer.from(
+  '/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRof' +
+  'Hh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwh' +
+  'MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARC' +
+  'AABAAEDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAg' +
+  'EDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhc' +
+  'YGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJ' +
+  'ipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6' +
+  'erx8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD3+iiigD//2Q==',
+  'base64',
+))
 writeFileSync(join(mediaRoot, 'c 空格 & 符号.mkv'), bytes(900))
 writeFileSync(join(mediaRoot, 'd.srt'), '1\n00:00:01,000 --> 00:00:03,500\n第一行\n第二行\n\n2\n00:00:04,000 --> 00:00:06,000\n<i>斜体</i>\n')
 writeFileSync(join(mediaRoot, 'd.ass'), '[Script Info]\nTitle: t\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:03.50,Default,,0,0,0,,{\\b1}加粗{\\b0}\\N第二行\n')
@@ -238,6 +249,9 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
   const mkv = payload.files.find((item) => item.name === 'c 空格 & 符号.mkv')
   check('mkv 的 key 可编码往返', decodeURIComponent(encodeURIComponent(mkv.key)) === mkv.key)
   check('mkv 带 streamUrl', typeof mkv.streamUrl === 'string' && mkv.streamUrl.startsWith('/reel/stream'))
+  // 面包屑契约：任何层的 crumbs 都以根开头、当前目录收尾，根自己就只有一枚。
+  checkEqual('根目录面包屑只有根一枚', payload.crumbs.length, 1)
+  check('根面包屑就是根目录', payload.crumbs[0].key === keyOf('') && payload.crumbs[0].name === payload.root.label, JSON.stringify(payload.crumbs))
 }
 
 {
@@ -451,24 +465,24 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
 
 {
   const config = await request('/reel/api/config')
-  const payload = JSON.parse(config.buffer.toString('utf8'))
-  checkEqual('无设置服务时只读', payload.writable, false)
-  const write = await request('/reel/api/config', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ roots: [mediaRoot] }),
-  })
-  checkEqual('无设置服务时写入被拒', write.status, 409)
-}
-
-{
+  checkEqual('页内配置接口已删除', config.status, 404)
   const browse = await request('/reel/api/browse?path=')
-  const payload = JSON.parse(browse.buffer.toString('utf8'))
-  check('浏览根返回系统入口', Array.isArray(payload.folders))
-  const drill = await request(`/reel/api/browse?path=${encodeURIComponent(mediaRoot)}`)
-  const drilled = JSON.parse(drill.buffer.toString('utf8'))
-  check('浏览目录只列文件夹', drilled.folders.every((folder) => folder.name !== 'a.mp4'))
-  check('浏览目录列出子目录', drilled.folders.some((folder) => folder.name === '子目录'))
+  checkEqual('目录列举接口已删除', browse.status, 404)
+  const session = JSON.parse((await request('/reel/api/session')).buffer.toString('utf8'))
+  checkEqual('无设置服务时只读', session.writable, false)
+
+  // 图片缩略图：有 ffmpeg 时 /thumb 对图片返回缩小的 JPEG，列表条目带 thumbUrl。
+  const thumb = await request('/reel/thumb?k=r0/b.jpg')
+  if (session.capabilities.thumbnails === true) {
+    checkEqual('图片缩略图 200', thumb.status, 200)
+    check('图片缩略图是 JPEG', String(thumb.headers.get('content-type')).startsWith('image/jpeg'), String(thumb.headers.get('content-type')))
+    check('图片缩略图有内容', thumb.buffer.length > 100)
+    const listed = JSON.parse((await request('/reel/api/list?k=r0')).buffer.toString('utf8'))
+    const image = (listed.files ?? []).find((file) => file.name === 'b.jpg')
+    check('图片条目带 thumbUrl', typeof image?.thumbUrl === 'string', JSON.stringify(image))
+  } else {
+    checkEqual('无 ffmpeg 时图片缩略图 503', thumb.status, 503)
+  }
 }
 
 // ── 方法限制 ───────────────────────────────────────────────────────────────
@@ -484,7 +498,7 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
 // ── 生命周期 ───────────────────────────────────────────────────────────────
 
 {
-  checkEqual('注册了 13 条精确路由', harness.routes.exact.size, 13)
+  checkEqual('注册了 11 条精确路由', harness.routes.exact.size, 11)
   check('注册了资源前缀路由', harness.routes.prefix.has('/reel'))
   const before = harness.routes.exact.size
   harness.dispose()
@@ -517,44 +531,82 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
   checkEqual('组合入口成为 base 层', registered.base.roots[0], mediaRoot)
 
   // 1) 用户层为空：必须回落到入口配置，而不是空默认。
-  const fromEntry = await call('/reel/api/config')
+  const fromEntry = await call('/reel/api/session')
   checkEqual('用户层为空时用入口配置', fromEntry.payload.roots.length, 1)
   checkEqual('入口配置的路径生效', fromEntry.payload.roots[0].path, mediaRoot)
   checkEqual('有设置服务时可写', fromEntry.payload.writable, true)
 
-  // 2) 写用户层：盖过入口配置。
-  const written = await call('/reel/api/config', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ roots: [join(mediaRoot, '子目录')] }),
-  })
-  checkEqual('写入成功', written.status, 200)
+  // 2) 用户层盖过入口配置（设置卡片经 settings 远程写入，同一份数据）。
+  settingsHarness.settings.registrations.get('reel').user = { roots: [join(mediaRoot, '子目录')] }
+  const written = await call('/reel/api/session')
   checkEqual('用户层盖过入口配置', written.payload.roots.length, 1)
   check('用户层的路径生效', written.payload.roots[0].path.endsWith('子目录'), JSON.stringify(written.payload.roots))
 
   // 3) 用户层显式写成空数组 = 「一个目录都不要」，这是设置服务的既有语义，
   //    上层显式给了值就不再往下继承。删掉这个键（unset）才回到入口配置。
   settingsHarness.settings.registrations.get('reel').user = { roots: [] }
-  const cleared = await call('/reel/api/config')
+  const cleared = await call('/reel/api/session')
   checkEqual('空数组表示清空目录', cleared.payload.roots.length, 0)
-  checkEqual('清空后 configured 跟随用户层', (cleared.payload.configured ?? []).length, 0)
 
   settingsHarness.settings.registrations.get('reel').user = undefined
-  const inherited = await call('/reel/api/config')
+  const inherited = await call('/reel/api/session')
   checkEqual('删掉用户键后继承入口配置', inherited.payload.roots.length, 1)
   checkEqual('继承回入口配置的路径', inherited.payload.roots[0].path, mediaRoot)
-  checkEqual('继承后 configured 回到入口值', inherited.payload.configured[0], mediaRoot)
-
-  // 4) 不存在的目录必须被拒，哪怕设置服务在场。
-  const missing = await call('/reel/api/config', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ roots: [`${mediaRoot}\\不存在的目录`] }),
-  })
-  checkEqual('不存在的目录被拒', missing.status, 400)
 
   settingsServer.close()
   settingsHarness.dispose()
+}
+
+// ── cacheDir：校验、schema 包络与落点警告 ──────────────────────────────────
+//
+// cacheDir 是新增配置：缩略图与悬停动画的缓存目录，缺省仍在系统临时目录。
+// schema 包络必须是「子节点以 uid 数字引用」的形状——浏览器半边的 rehydrate
+// 靠 refs[uid] 接线，包络里出现嵌套对象会静默退化，设置卡片就会消失。
+
+{
+  // Config 校验：接受字符串并 trim，拒绝非字符串。
+  const withCache = Config['~standard'].validate({ roots: [], cacheDir: '  E:\\cache  ' })
+  check('Config 接受 cacheDir', withCache.issues === undefined, JSON.stringify(withCache))
+  checkEqual('Config 会 trim cacheDir', withCache.value.cacheDir, 'E:\\cache')
+  const badCache = Config['~standard'].validate({ roots: [], cacheDir: 42 })
+  check('Config 拒绝非字符串 cacheDir', badCache.issues !== undefined)
+
+  // schema 包络：与 schemastery 的 toJSON 输出同构（数字 uid 引用）。
+  const schemaHarness = fakeContext({ withSettings: true })
+  apply(schemaHarness.ctx, Config['~standard'].validate({ roots: [mediaRoot], requireTrustedRequest: true }).value)
+  const schema = schemaHarness.settings.registrations.get('reel').schema
+  const envelope = schema.toJSON()
+  checkEqual('包络根节点是 object', envelope.refs[envelope.uid].type, 'object')
+  checkEqual('包络引用是 uid 数字（客户端可 rehydrate）',
+    typeof envelope.refs[envelope.uid].dict.roots, 'number')
+  checkEqual('包络声明 cacheDir 字段', typeof envelope.refs[envelope.uid].dict.cacheDir, 'number')
+
+  // schema 解析：默认不注入 cacheDir；给值时保留，非字符串报 TypeError。
+  const resolved = schema({})
+  check('默认不注入 cacheDir', resolved.cacheDir === undefined, JSON.stringify(resolved))
+  const given = schema({ roots: ['x'], cacheDir: 'E:\\cache' })
+  checkEqual('给值时保留 cacheDir', given.cacheDir, 'E:\\cache')
+  let threw = false
+  try { schema({ cacheDir: 7 }) } catch { threw = true }
+  check('非字符串 cacheDir 被拒', threw)
+  schemaHarness.dispose()
+
+  // 落点警告：cacheDir 在配置根之内要警告一次，之外必须安静。
+  const warnHarness = fakeContext({ withSettings: true })
+  apply(warnHarness.ctx, Config['~standard'].validate({ roots: [mediaRoot], cacheDir: mediaRoot, requireTrustedRequest: true }).value)
+  warnHarness.emit('internal/ready')
+  check('cacheDir 在根内时给出警告',
+    warnHarness.logs.some(([level, , args]) => level === 'warn' && String(args?.[0]).includes('inside a configured root')),
+    JSON.stringify(warnHarness.logs))
+  warnHarness.dispose()
+
+  const quietHarness = fakeContext({ withSettings: true })
+  apply(quietHarness.ctx, Config['~standard'].validate({ roots: [mediaRoot], cacheDir: `${mediaRoot}-cache`, requireTrustedRequest: true }).value)
+  quietHarness.emit('internal/ready')
+  check('cacheDir 在根外不警告',
+    !quietHarness.logs.some(([level]) => level === 'warn'),
+    JSON.stringify(quietHarness.logs))
+  quietHarness.dispose()
 }
 
 // ── 汇总 ───────────────────────────────────────────────────────────────────

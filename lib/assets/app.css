@@ -371,18 +371,228 @@ body.sidebar-collapsed .sidebar-resizer { display: none; }
   position: relative;
 }
 
-.crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-bottom: 10px; font-size: 13px; }
+/* ── 路径行（面包屑） ───────────────────────────────────────────────────
+ *
+ * 和右边那排按钮同处工具条一行：路径吃满剩下的宽度，按钮靠右。一条线上有两种
+ * 按钮，外观必须能区分开——**名字 = 去那一层**（扁的、无边框文字按钮），
+ * **「▾」= 展开这一层的子文件夹**（藏在名字右边，指针到这一级才显形）。点名字
+ * 弹菜单的旧设计去掉了：面包屑就该走到那一层。
+ *
+ * 路径再深也不能把这行撑高——吸顶容器的每一次高度变化都会让下面的网格上下跳
+ * 一次。所以中间层级折成一枚「…」，路径本身也不换行。
+ */
 
-.crumb {
-  border: 0; background: transparent; color: var(--fg-dim);
-  cursor: pointer; padding: 3px 6px; border-radius: 6px; max-width: 320px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.pathbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 220px;
+  min-width: 0;
 }
-.crumb:hover { background: var(--bg-hover); color: var(--fg); }
-.crumb.is-current { color: var(--fg); font-weight: 600; }
-.crumb-sep { color: var(--fg-faint); }
+
+.path-up {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0 0 2px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--fg-dim);
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s var(--ease), color 0.15s var(--ease), border-color 0.15s var(--ease);
+}
+
+.path-up:hover { background: var(--bg-hover); color: var(--fg); }
+.path-up:disabled { opacity: 0.28; cursor: default; background: transparent; color: var(--fg-faint); }
+
+.crumbs { display: flex; flex-wrap: nowrap; align-items: center; gap: 2px; min-width: 0; font-size: 13px; }
+
+/* 一级路径 = 名字（+ 有子文件夹时的 ▾）。悬停时两者共用一块底色，看起来
+   还是一个整体，但点击落在谁身上是分开的。 */
+.crumb {
+  display: flex;
+  align-items: center;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 320px;
+  border-radius: 7px;
+  transition: background 0.15s var(--ease);
+}
+
+.crumb:hover { background: var(--bg-hover); }
+.crumb:focus-within { background: var(--bg-hover); }
+/* Tab 停在「▾」上时（focus 事件会加这个类），这一级也整体点亮。 */
+.crumb.is-focused { background: var(--bg-hover); }
+/* 名字按下去就走人，所以它的悬停不改变自己的颜色——变色的是上面那块底色。 */
+.crumb-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--fg-dim);
+  font: inherit;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 7px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crumb-name:hover { color: var(--fg); }
+.crumb-name:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* 根的图标只是一个「这里是一切的起点」的记号，不参与点击。 */
+.crumb-ico { flex: none; font-size: 12px; line-height: 1; opacity: 0.85; margin-left: 2px; }
+
+/* 「▾」的触达区做够大（28px），但视觉上只是一枚小三角，免得抢占名字的位置。 */
+.crumb-chevron {
+  flex: none;
+  width: 24px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg-faint);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 7px;
+  opacity: 0.55;
+  transition: opacity 0.15s var(--ease), color 0.15s var(--ease), background 0.15s var(--ease);
+}
+
+.crumb:hover .crumb-chevron { opacity: 1; }
+.crumb-chevron:hover { background: var(--bg-active); color: var(--fg); }
+.crumb-chevron:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; opacity: 1; }
+
+/* 收起来的中间层级：点一下展开中间那一段。有它，再深的路也不用换行。 */
+.crumb-fold {
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: var(--fg-faint);
+  font: inherit;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  padding: 4px 7px;
+  border-radius: 7px;
+}
+
+.crumb-fold:hover { background: var(--bg-hover); color: var(--fg-dim); }
+
+.crumb-sep { flex: none; color: var(--fg-faint); opacity: 0.6; font-size: 12px; user-select: none; }
+
+/* 当前这一层：和别的层级是同一套画法（名字 + ▾），只多一个加粗。它的名字
+   是个 disabled 的按钮——「你在这」，点了没有去处，所以不给悬停反馈、也不给
+   手型光标。长名字优先保住：窄的时候先挤别的层级。 */
+.crumb.is-current { flex: 0 1 auto; min-width: 0; }
+.crumb.is-current .crumb-name {
+  color: var(--fg);
+  font-weight: 600;
+  cursor: default;
+  pointer-events: none;
+  max-width: 260px;
+}
+
+/* 「所有层级」只由工具条上那枚开关表达，路径行不再长第二枚徽章。 */
+
+/* 范围开关：一枚文字按钮，开着的时候用强调色，和「排序」那种图标按钮区分开。 */
+#scopeToggle {
+  width: auto;
+  min-width: 52px;
+  padding: 0 10px;
+  font-size: 12.5px;
+  border-color: var(--line);
+  background: var(--bg-sunken);
+}
+
+#scopeToggle.is-on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-strong); }
+
+/* 点「▾」弹出的子文件夹菜单，挂在 body 上用 fixed 定位，
+   不受路径行裁剪。 */
+.crumb-menu {
+  position: fixed;
+  z-index: 80;
+  width: 300px;
+  max-width: calc(100vw - 16px);
+  max-height: min(60vh, 460px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 4px;
+}
+
+.crumb-menu-head {
+  padding: 7px 8px 6px;
+  color: var(--fg-faint);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crumb-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.crumb-menu-item:hover, .crumb-menu-item:focus-visible { background: var(--bg-hover); outline: none; }
+.crumb-menu-item[aria-checked="true"] { color: var(--accent-strong); }
+.crumb-menu-item .tick { flex: none; width: 12px; color: var(--accent); font-size: 11px; }
+.crumb-menu-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crumb-menu-tally { flex: none; color: var(--fg-faint); font-size: 11px; font-variant-numeric: tabular-nums; }
+
+.crumb-menu-search {
+  width: 100%;
+  height: 30px;
+  margin: 2px 0 4px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
+}
+
+.crumb-menu-search:focus { border-color: var(--accent); }
+.crumb-menu-search::placeholder { color: var(--fg-faint); }
+.crumb-menu-sep { height: 1px; margin: 4px 2px; background: var(--line-soft); }
+.crumb-menu-pending { padding: 9px 8px; color: var(--fg-faint); font-size: 12.5px; }
 
 /* ── 工具条 ───────────────────────────────────────────────────────────── */
+
+/* 面包屑 + 统计行滚动吸顶：负 margin 抵消 .content 的内边距，让吸住时的
+   背景铺满内容区整宽，而不是中间一条；top 用同样的负值抵掉 margin-top
+   对吸附位置的偏移。 */
+.toolbar-sticky {
+  position: sticky;
+  top: -16px;
+  z-index: 30;
+  background: var(--bg);
+  margin: -16px -18px 12px;
+  padding: 16px 18px 8px;
+}
 
 .toolbar {
   display: flex;
@@ -392,7 +602,7 @@ body.sidebar-collapsed .sidebar-resizer { display: none; }
   margin-bottom: 10px;
 }
 
-.toolbar .crumbs { margin-bottom: 0; flex: 1 1 auto; min-width: 0; }
+/* 路径 + 右侧按钮同一行：按钮那侧不吃宽度，剩余空间全给路径。 */
 .toolbar-side { display: flex; align-items: center; gap: 8px; flex: none; margin-left: auto; }
 
 .modes-sm { padding: 2px; }
@@ -403,51 +613,33 @@ body.sidebar-collapsed .sidebar-resizer { display: none; }
   color: var(--fg-faint); font-size: 12px; margin-bottom: 12px;
 }
 
-/* ── 子文件夹：紧凑的一行一个，不是卡片 ─────────────────────────────────── */
-
-.folders-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(var(--folder-tile, 260px), 1fr));
-  gap: 4px;
-  margin-bottom: 16px;
-}
-
-.folder-row {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 7px 10px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-elev);
-  border: 1px solid transparent;
-  cursor: pointer;
-  min-width: 0;
-  transition: background 0.14s var(--ease), border-color 0.14s var(--ease);
-}
-
-.folder-row:hover { background: var(--bg-hover); border-color: var(--line); }
-.folder-row.is-hidden { opacity: 0.55; }
-.folder-row .ico { flex: none; font-size: 15px; line-height: 1; }
-
-.folder-row .name {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-size: 13px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.folder-row .chev { flex: none; color: var(--fg-faint); font-size: 12px; }
-.folder-row .tally { flex: none; font-size: 11.5px; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
-
-@media (min-width: 1500px) { :root { --folder-tile: 300px; } }
+/* 吸顶容器的底边距由容器自己出，summary 不再额外撑高。 */
+.toolbar-sticky .summary { margin-bottom: 0; }
 
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(var(--tile, 200px), 1fr));
   gap: 12px;
 }
+
+/* 平铺网格的分块窗口化：网格本体退化为块容器，每块自己复刻网格列。
+   只挂载视口附近的块，远处的块折成定高占位，把同时活着的缩略图数量
+   压在几百张以内——大目录滚动卡顿的主因是几千张图同时进解码管线。 */
+body:not([data-view="list"]) .grid:not(.is-grouped) { display: block; }
+body:not([data-view="list"]) .grid:not(.is-grouped) .grid-chunk {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--tile, 200px), 1fr));
+  gap: 12px;
+}
+body:not([data-view="list"]) .grid:not(.is-grouped) .grid-chunk + .grid-chunk { margin-top: 12px; }
+body[data-view="list"] .grid:not(.is-grouped) .grid-chunk {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+body[data-view="list"] .grid:not(.is-grouped) .grid-chunk + .grid-chunk { margin-top: 2px; }
+.grid-chunk.is-unmounted { display: block; }
+.grid-chunk.is-unmounted > * { height: 100%; }
 
 body[data-view="list"] .grid { display: block; }
 
@@ -580,12 +772,12 @@ body[data-view="list"] .grid { display: block; }
 
 .group-tally { flex: none; font-size: 11.5px; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
 .group-open { margin-left: auto; flex: none; }
-.group-empty { color: var(--fg-faint); font-size: 12.5px; padding: 6px 2px 8px; }
 
-/* 卡片内部是普通网格，列宽下限由该分组自己算出来（--group-min）。 */
+/* 卡片内部是普通网格，列宽和平铺一致：卡片的尺寸不随组变，
+   组与组之间只差「卡片的多少」。 */
 .group-body {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--group-min, 132px)), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--tile, 200px)), 1fr));
   gap: 8px;
 }
 
@@ -1172,96 +1364,6 @@ body[data-view="list"] .card-progress { display: none; }
   z-index: 6;
 }
 
-/* ── 设置抽屉 ─────────────────────────────────────────────────────────── */
-
-.drawer {
-  position: fixed; inset: 0; z-index: 80;
-  background: rgba(4, 5, 9, 0.55);
-  display: flex; justify-content: flex-end;
-  animation: fade 0.15s var(--ease);
-}
-
-.drawer-panel {
-  width: min(440px, 92vw);
-  height: 100%;
-  background: var(--bg-elev);
-  border-left: 1px solid var(--line);
-  display: flex; flex-direction: column;
-  padding: 18px;
-  gap: 14px;
-  overflow: auto;
-  animation: slide-in 0.2s var(--ease);
-}
-
-.drawer-head { display: flex; align-items: center; justify-content: space-between; }
-.drawer-head h2 { margin: 0; font-size: 16px; }
-
-.drawer-note { margin: 0; font-size: 12.5px; color: var(--fg-faint); line-height: 1.6; }
-.drawer-note code { background: var(--bg-sunken); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
-
-.root-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-
-.root-item {
-  display: flex; align-items: center; gap: 10px;
-  border: 1px solid var(--line);
-  background: var(--bg-sunken);
-  border-radius: var(--radius-sm);
-  padding: 8px 10px;
-}
-
-.root-item .path { flex: 1 1 auto; font-size: 12.5px; word-break: break-all; }
-.root-item .badge { font-size: 11px; color: var(--fg-faint); }
-.root-item button { flex: none; }
-
-.root-add label { display: block; font-size: 12.5px; color: var(--fg-dim); margin-bottom: 6px; }
-.root-add-row { display: flex; gap: 8px; }
-.root-add-row input { flex: 1 1 auto; min-width: 0; }
-
-input[type="text"], input[type="search"] {
-  height: 34px;
-  padding: 0 12px;
-  background: var(--bg-sunken);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  color: var(--fg);
-  outline: none;
-}
-
-input[type="text"]:focus { border-color: var(--accent); }
-
-.root-error { color: var(--danger); font-size: 12.5px; margin: 8px 0 0; }
-
-.picker { border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; display: flex; flex-direction: column; min-height: 190px; }
-
-.picker-head {
-  display: flex; align-items: center; gap: 10px;
-  padding: 8px;
-  background: var(--bg-sunken);
-  border-bottom: 1px solid var(--line);
-}
-
-.picker-head .ghost-btn { width: auto; padding: 0 12px; height: 30px; flex: none; }
-.picker-path { font-size: 12.5px; color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.picker-list { flex: 1 1 auto; overflow: auto; max-height: 320px; }
-
-.picker-row {
-  display: flex; align-items: center; gap: 8px;
-  padding: 8px 10px;
-  font-size: 13px;
-  cursor: pointer;
-  border-bottom: 1px solid var(--line-soft);
-}
-
-.picker-row:hover { background: var(--bg-hover); }
-.picker-row .name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.picker-row .tag { font-size: 11px; color: var(--accent-strong); }
-.picker-row.is-hidden { opacity: 0.55; }
-
-.drawer-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: auto; }
-.drawer-foot .ghost-btn { width: auto; padding: 0 14px; }
-.drawer-status { font-size: 12.5px; color: var(--fg-faint); }
-
 /* ── 通用 ─────────────────────────────────────────────────────────────── */
 
 .toasts {
@@ -1308,7 +1410,7 @@ input[type="text"]:focus { border-color: var(--accent); }
 .viewer-stage { touch-action: none; }
 .progress { touch-action: none; }
 .slide { touch-action: pan-y; }
-button, .card, .folder-row, .crumb, .picker-row, .tree-folder, .tree-root-name {
+button, .card, .crumb, .crumb-name, .crumb-chevron, .crumb-fold, .tree-folder, .tree-root-name {
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
 }
@@ -1339,12 +1441,19 @@ button, .card, .folder-row, .crumb, .picker-row, .tree-folder, .tree-root-name {
   .card-info { padding: 6px 8px 8px; }
   .card-name { font-size: 12px; }
   .card-meta { font-size: 11px; }
-  .folders-grid { grid-template-columns: 1fr; gap: 3px; margin-bottom: 12px; }
-  .folder-row { padding: 9px 10px; }
   .toolbar { gap: 8px; }
   .toolbar-side { width: 100%; margin-left: 0; }
   .modes-sm .mode-btn { padding: 5px 9px; font-size: 12px; }
-  .toolbar .crumbs { flex: 1 1 100%; }
+
+  /* 手机上宽度最紧张：路径和按钮会各占一行（工具条允许换行），路径行本身
+     绝不换行——它一变高，吸顶容器就跟着变高，下面的网格会跳。 */
+  .toolbar-sticky { top: -10px; margin: -10px -10px 10px; padding: 10px 10px 6px; }
+  .pathbar { flex: 1 1 100%; }
+  .crumbs { font-size: 12.5px; }
+  .crumb { max-width: 30vw; }
+  .crumb-name { padding: 4px 5px; }
+  .crumb.is-current .crumb-name { max-width: 46vw; }
+  .crumb-menu { width: min(320px, calc(100vw - 20px)); }
 
   /* 刷视频：文字压在画面上的部分要收，不然半个屏幕都被盖住。 */
   .slide-overlay { padding: 14px 14px calc(18px + env(safe-area-inset-bottom)); gap: 10px; }
@@ -1384,13 +1493,6 @@ button, .card, .folder-row, .crumb, .picker-row, .tree-folder, .tree-root-name {
   .progress-tip img { width: 104px; }
   .progress-tip video { width: 104px; }
 
-  /* 设置抽屉占满宽度，手指点得到。 */
-  .drawer-panel { width: 100%; border-left: 0; padding: 14px; }
-  .picker-list { max-height: 40vh; }
-  .picker-row { padding: 11px 10px; }
-  .root-add-row { flex-wrap: wrap; }
-  .root-add-row input { flex: 1 1 100%; }
-  .root-add-row .primary-btn { width: 100%; }
   .toasts { bottom: calc(16px + env(safe-area-inset-bottom)); }
 }
 

@@ -1,13 +1,27 @@
 {
   "name": "dsh-reel",
   "version": "0.1.0",
-  "private": true,
-  "description": "Browse images and videos from any directory over the dsh web port: a browse/gallery mode and a vertical swipe feed, with a range-streaming video player.",
   "type": "module",
   "license": "MIT",
-  "comment": "Deliberately dependency-free: the host half imports only Node built-ins, and the browser half is plain files served as-is. Installing this into a dsh profile adds one Loader row and nothing to the dependency graph, and there is no build step anywhere.",
+  "description": "Browse images and videos from any directory over the dsh web port: a browse/gallery mode and a vertical swipe feed, with a range-streaming video player.",
+  "keywords": [
+    "dsh",
+    "cordis",
+    "media",
+    "video",
+    "images",
+    "gallery",
+    "plugin"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lsjspl/dsh-reel.git"
+  },
+  "homepage": "https://github.com/lsjspl/dsh-reel#readme",
+  "bugs": "https://github.com/lsjspl/dsh-reel/issues",
   "exports": {
     ".": "./lib/reel.js",
+    "./client": "./lib/client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
@@ -23,6 +37,14 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
     }
   },
   "engines": {

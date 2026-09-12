@@ -28,17 +28,8 @@
   </div>
 
   <div class="topbar-actions">
-    <button type="button" class="icon-btn" id="viewToggle" title="切换网格 / 列表 (V)" aria-label="切换视图">
-      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 3h6v6H3zM11 3h6v6h-6zM3 11h6v6H3zM11 11h6v6h-6z"/></svg>
-    </button>
-    <button type="button" class="icon-btn" id="sortToggle" title="切换排序 (S)" aria-label="切换排序">
-      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5h12v2H4zM4 9h8v2H4zM4 13h5v2H4z"/></svg>
-    </button>
     <button type="button" class="icon-btn" id="refreshBtn" title="重新载入当前目录 (R)" aria-label="刷新">
       <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3a7 7 0 1 0 6.7 9h-2.1A5 5 0 1 1 10 5v2.5L14 4l-4-3.5z"/></svg>
-    </button>
-    <button type="button" class="icon-btn" id="settingsBtn" title="设置目录" aria-label="设置">
-      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 6.5A3.5 3.5 0 1 0 10 13.5 3.5 3.5 0 0 0 10 6.5zm0 5A1.5 1.5 0 1 1 10 8a1.5 1.5 0 0 1 0 3.5z"/><path d="M8.6 1.5h2.8l.4 2a6.6 6.6 0 0 1 1.5.9l1.9-.8 2 2-.8 1.9c.4.5.7 1 .9 1.5l2 .4v2.8l-2 .4a6.6 6.6 0 0 1-.9 1.5l.8 1.9-2 2-1.9-.8a6.6 6.6 0 0 1-1.5.9l-.4 2H8.6l-.4-2a6.6 6.6 0 0 1-1.5-.9l-1.9.8-2-2 .8-1.9a6.6 6.6 0 0 1-.9-1.5l-2-.4v-2.8l2-.4c.2-.5.5-1 .9-1.5l-.8-1.9 2-2 1.9.8c.5-.4 1-.7 1.5-.9z"/></svg>
     </button>
   </div>
 </header>
@@ -65,32 +56,46 @@
   </button>
 
   <main class="content" id="content">
-    <section class="toolbar">
-      <div class="crumbs" id="crumbs"></div>
-      <div class="toolbar-side">
-        <div class="modes modes-sm" role="group" aria-label="浏览范围">
-          <button type="button" class="mode-btn is-active" data-scope-btn="dir" title="只看当前这一层">本目录</button>
-          <button type="button" class="mode-btn" data-scope-btn="all" title="递归列出所有层级的文件，不显示文件夹">全部（含子目录）</button>
+    <div class="toolbar-sticky" id="toolbarSticky">
+      <section class="toolbar">
+        <!--
+          路径行在工具条同一行上：左边回答「我在哪、怎么上去」，右边是那排按钮。
+          点任何一级名字 = 直接进那一层，「▾」只负责展开这一级的子文件夹——两个
+          动作各有各的按钮，不再共用一个弹出菜单。范围（本层 / 所有层级）是右边
+          那枚独立开关，不在这条路径上。
+        -->
+        <nav class="pathbar" aria-label="当前位置">
+          <button type="button" class="path-up" id="crumbUp" title="返回上一级 (Backspace)" aria-label="返回上一级">‹</button>
+          <div class="crumbs" id="crumbs"></div>
+        </nav>
+        <div class="toolbar-side">
+          <div class="modes modes-sm" role="group" aria-label="列出内容">
+            <button type="button" class="mode-btn is-active" data-kind-btn="all" title="图片和视频都显示">全部</button>
+            <button type="button" class="mode-btn" data-kind-btn="video" title="只显示视频">视频</button>
+            <button type="button" class="mode-btn" data-kind-btn="image" title="只显示图片">图片</button>
+          </div>
+          <div class="modes modes-sm" role="group" aria-label="分组方式">
+            <button type="button" class="mode-btn is-active" data-group-btn="flat" title="文件直接平铺，不分组">平铺</button>
+            <button type="button" class="mode-btn" data-group-btn="folder" title="每个文件夹包成一张卡片，卡片内部仍然平铺">分组</button>
+          </div>
+          <div class="modes modes-sm" role="group" aria-label="视图">
+            <button type="button" class="mode-btn is-active" data-view-btn="grid" title="网格视图 (V 切换)">网格</button>
+            <button type="button" class="mode-btn" data-view-btn="list" title="列表视图 (V 切换)">列表</button>
+          </div>
+          <button type="button" class="icon-btn" id="scopeToggle" title="列出范围 (A 切换)" aria-label="列出范围" aria-pressed="false">本层</button>
+          <button type="button" class="icon-btn" id="sortToggle" title="切换排序 (S)" aria-label="切换排序">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5h12v2H4zM4 9h8v2H4zM4 13h5v2H4z"/></svg>
+          </button>
         </div>
-        <div class="modes modes-sm" role="group" aria-label="列出内容">
-          <button type="button" class="mode-btn" data-kind-btn="all" title="图片和视频都显示">全部</button>
-          <button type="button" class="mode-btn is-active" data-kind-btn="video" title="只显示视频">只看视频</button>
-        </div>
-        <div class="modes modes-sm" role="group" aria-label="分组方式">
-          <button type="button" class="mode-btn is-active" data-group-btn="flat" title="文件直接平铺，不分组">平铺</button>
-          <button type="button" class="mode-btn" data-group-btn="folder" title="每个子文件夹包成一张卡片，卡片内部仍然平铺">按文件夹分组</button>
-        </div>
-      </div>
-    </section>
+      </section>
 
-    <div class="summary" id="summary"></div>
-    <section class="folders-grid" id="folders" aria-label="子文件夹"></section>
+      <div class="summary" id="summary"></div>
+    </div>
     <section class="grid" id="grid" aria-label="媒体"></section>
     <div class="more" id="more"></div>
     <div class="empty" id="empty" hidden>
       <p class="empty-title">这个目录里没有图片或视频</p>
-      <p class="empty-hint">换一个目录，或在设置里添加一个媒体目录。</p>
-      <button type="button" class="primary-btn" data-open-settings>打开设置</button>
+      <p class="empty-hint">换一个目录，或到 dsh 设置 → 插件 → 插件配置 里添加媒体目录。</p>
     </div>
   </main>
 </div>
@@ -209,42 +214,6 @@
   </div>
 
   <pre class="stats" id="statsPanel" hidden></pre>
-</div>
-
-<!-- ── 设置抽屉 ───────────────────────────────────────────────────────── -->
-<div class="drawer" id="drawer" hidden role="dialog" aria-modal="true" aria-label="设置">
-  <div class="drawer-panel">
-    <header class="drawer-head">
-      <h2>媒体目录</h2>
-      <button type="button" class="icon-btn ghost" id="drawerClose" aria-label="关闭">✕</button>
-    </header>
-
-    <p class="drawer-note" id="drawerNote"></p>
-
-    <ol class="root-list" id="rootList"></ol>
-
-    <form class="root-add" id="rootAdd">
-      <label for="rootInput">添加目录</label>
-      <div class="root-add-row">
-        <input id="rootInput" type="text" placeholder="D:\Photos 或 /home/me/Media" spellcheck="false" autocomplete="off">
-        <button type="submit" class="primary-btn">添加</button>
-      </div>
-      <p class="root-error" id="rootError" hidden></p>
-    </form>
-
-    <div class="picker">
-      <div class="picker-head">
-        <button type="button" class="ghost-btn" id="pickerUp" title="上一级">↑ 上一级</button>
-        <span class="picker-path" id="pickerPath">选择一个目录</span>
-      </div>
-      <div class="picker-list" id="pickerList"></div>
-    </div>
-
-    <footer class="drawer-foot">
-      <span class="drawer-status" id="drawerStatus"></span>
-      <button type="button" class="ghost-btn" id="drawerReload">重新载入</button>
-    </footer>
-  </div>
 </div>
 
 <!-- 没有全局加载遮罩：数据慢就慢，画面保持可用。 -->

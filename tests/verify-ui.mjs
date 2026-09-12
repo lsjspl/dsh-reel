@@ -78,11 +78,13 @@ const waitFor = async (expression, timeoutMs = 20000) => {
  * 早期版本靠「上一步留下的状态」接着做，结果一处改动就让后面几条假失败。
  * 现在每段开头先声明自己需要什么状态，而不是猜。
  *
+ * 范围现在是工具条上的独立开关（#scopeToggle），切换目录不会顺手把它关掉，
+ * 所以这里要显式设：先回根（面包屑上第一枚名字），再按需要打开开关。
+ *
  * @param {{scope?: 'dir'|'all', kinds?: 'all'|'video', group?: 'flat'|'folder'}} want - 目标状态。
  */
 const setUiState = async (want) => {
   const clicks = []
-  if (want.scope !== undefined) clicks.push(`['data-scope-btn', '${want.scope}']`)
   if (want.kinds !== undefined) clicks.push(`['data-kind-btn', '${want.kinds}']`)
   if (want.group !== undefined) clicks.push(`['data-group-btn', '${want.group}']`)
   await ev(`(() => {
@@ -92,8 +94,58 @@ const setUiState = async (want) => {
     }
     return true
   })()`)
+  if (want.scope !== undefined) {
+    await clickCrumbRootEntry()
+    if (want.scope === 'all') await enterAllLevels()
+  }
   await sleep(1200)
   await waitFor('document.querySelectorAll(".card, .folder-group, .folder-row").length > 0', 25000)
+}
+
+/**
+ * 把范围切到「所有层级」：工具条上的独立开关。
+ *
+ * 范围不再挂在面包屑菜单里（那里只有路径和子文件夹），所以直接点 #scopeToggle。
+ *
+ * @returns {Promise<boolean>} 开关确实被点亮。
+ */
+const enterAllLevels = async () => {
+  const clicked = await ev(`(async () => {
+    const toggle = document.getElementById('scopeToggle')
+    if (toggle === null) return false
+    if (!toggle.classList.contains('is-on')) toggle.click()
+    await new Promise((r) => setTimeout(r, 2500))
+    return toggle.classList.contains('is-on')
+  })()`)
+  await sleep(600)
+  return clicked === true
+}
+
+/**
+ * 回到根目录的「本层」视图：先回根（路径行上第一枚名字），再关掉范围开关。
+ *
+ * 面包屑名字现在就是导航本身——点根名字 = 回根目录这一层。已经在根上时，
+ * 路径行里根本没有「根」这一枚（当前层不是按钮），这时只关开关。
+ *
+ * @returns {Promise<boolean>} 已经在根上且开关是关的。
+ */
+const clickCrumbRootEntry = async () => {
+  const ok = await ev(`(async () => {
+    if (new URLSearchParams(location.search).get('k') !== 'r0') {
+      const root = document.querySelector('#crumbs .crumb-name[data-depth="0"]')
+      if (root === null) return false
+      root.click()
+      await new Promise((r) => setTimeout(r, 1500))
+    }
+    const toggle = document.getElementById('scopeToggle')
+    if (toggle !== null && toggle.classList.contains('is-on')) {
+      toggle.click()
+      await new Promise((r) => setTimeout(r, 1500))
+    }
+    return new URLSearchParams(location.search).get('k') === 'r0' && (toggle === null || !toggle.classList.contains('is-on'))
+  })()`)
+  await sleep(600)
+  return ok === true
 }
 
 try {
@@ -232,35 +284,155 @@ try {
   const cardCount = await ev('document.querySelectorAll(".card").length')
   check('文件夹与媒体分开渲染', folderCount > 0 && cardCount > 0, `文件夹 ${folderCount} 行 / 媒体 ${cardCount} 张`)
 
-  // ── 3. 递归「全部」模式：不显示文件夹，列出所有层级 ────────────────────
-  await setUiState({ scope: 'all', kinds: 'video', group: 'flat' })
-  const folderCountBefore = await ev('document.querySelectorAll(".folder-row").length')
-  const scopeProbe = await ev(`(async () => {
-    const btn = document.querySelector('[data-scope-btn="all"]')
-    btn.click()
-    await new Promise((r) => setTimeout(r, 2500))
+  // ── 3. 路径行：点名字就进那一层，「▾」管子文件夹，范围是独立开关 ────────
+  // 目标目录用「根目录里第一个有内容、自己还有子文件夹的子文件夹」，而不是写死
+  // 某个名字：这个脚本要能跑在任何一台机器上，而「▾」得有子文件夹才出得来。
+  const listOf = async (key) => (await fetch(`${origin}/reel/api/list?k=${encodeURIComponent(key)}`)).json()
+  const rootListing = await listOf('r0')
+  let target = null
+  for (const folder of rootListing.folders ?? []) {
+    if ((folder.mediaCount ?? 0) <= 0) continue
+    if (target === null) target = folder
+    const inner = await listOf(folder.key)
+    if ((inner.folders ?? []).length > 0) {
+      target = folder
+      break
+    }
+  }
+  check('根目录里能找到可用的子文件夹', target !== null, JSON.stringify(target))
+  const targetName = String(target?.name ?? '')
+  const targetKey = String(target?.key ?? '')
+  const targetSubfolders = ((await listOf(targetKey)).folders ?? []).length
+  await send('Page.navigate', { url: `${origin}/reel?k=${encodeURIComponent(targetKey)}` })
+  check('子目录页出现卡片', await waitFor('document.querySelectorAll(".card").length > 0'))
+  const dirState = await ev(`(() => ({
+    crumbs: document.getElementById('crumbs').textContent,
+    cards: document.querySelectorAll('.card').length,
+    summary: document.getElementById('summary').textContent,
+    names: [...document.querySelectorAll('#crumbs .crumb-name')].map((n) => n.textContent),
+    currentIsNotButton: document.querySelector('#crumbs .crumb-current.crumb-name, #crumbs button.crumb-current') === null,
+    currentLabel: document.querySelector('#crumbs .crumb-current .crumb-label')?.textContent ?? '',
+    chevrons: document.querySelectorAll('#crumbs .crumb-chevron').length,
+    separators: document.querySelectorAll('#crumbs .crumb-sep').length,
+    upDisabled: document.getElementById('crumbUp').disabled,
+    scopeOn: document.getElementById('scopeToggle').classList.contains('is-on'),
+  }))()`)
+  console.log('路径行结构:', JSON.stringify(dirState))
+  check('路径行把根和当前层分开了', dirState.names.length === 1 && dirState.separators === 1, dirState.crumbs)
+  check('根是按钮、当前层不是按钮', dirState.names.length === 1 && dirState.currentIsNotButton === true, JSON.stringify(dirState))
+  check('当前层写出了目录名', dirState.currentLabel === targetName, `「${dirState.currentLabel}」/ 目标「${targetName}」`)
+  check('子目录里「返回上一级」可用', dirState.upDisabled === false)
+  check('本层视图下范围开关是关的', dirState.scopeOn === false)
+
+  // 点根名字 = 直接回根目录这一层。旧设计这里弹的是菜单。
+  const clickRootName = await ev(`(async () => {
+    const root = document.querySelector('#crumbs .crumb-name[data-depth="0"]')
+    if (root === null) return { clicked: false }
+    root.click()
+    await new Promise((r) => setTimeout(r, 2000))
     return {
-      buttonFound: btn !== null,
-      buttonActive: btn.classList.contains('is-active'),
-      scopeInStorage: localStorage.getItem('mv.scope'),
-      folders: document.querySelectorAll('.folder-row').length,
-      cards: document.querySelectorAll('.card').length,
-      summary: document.getElementById('summary').textContent,
-      toasts: document.getElementById('toasts').textContent,
+      clicked: true,
+      menuOpened: document.querySelector('.crumb-menu') !== null,
+      key: new URLSearchParams(location.search).get('k'),
+      current: document.querySelector('#crumbs .crumb-current .crumb-label')?.textContent ?? '',
+      upDisabled: document.getElementById('crumbUp').disabled,
     }
   })()`)
-  console.log('scope 探测:', JSON.stringify(scopeProbe))
-  check('切到递归模式后按钮点亮', scopeProbe.buttonActive === true)
-  check('递归模式不显示文件夹', scopeProbe.folders === 0, `还有 ${scopeProbe.folders} 行`)
-  check('递归模式列出了所有层级', scopeProbe.cards === 143 || scopeProbe.cards > folderCountBefore, `递归 ${scopeProbe.cards} 张 vs 本层 ${folderCountBefore} 张`)
-  check('摘要说明含所有子目录', scopeProbe.summary.includes('含所有子目录'), scopeProbe.summary)
-  const allState = await ev(`(() => ({
-    crumbs: document.getElementById('crumbs').textContent,
-    where: document.querySelectorAll('.card-where').length,
-    whereSample: document.querySelector('.card-where')?.textContent ?? '',
-  }))()`)
+  console.log('点根名字:', JSON.stringify(clickRootName))
+  check('点名字直接导航，不再弹菜单', clickRootName.clicked === true && clickRootName.menuOpened === false, JSON.stringify(clickRootName))
+  check('点根名字回到了根', clickRootName.key === 'r0', `${clickRootName.key} / 当前层「${clickRootName.current}」`)
+  check('根目录上「返回上一级」不可用', clickRootName.upDisabled === true)
+
+  // 「返回上一级」按钮：回根之后用它再进目标目录，顺带钉住它真的能上来。
+  const upButton = await ev(`(async () => {
+    const row = [...document.querySelectorAll('#tree .tree-folder')].find((n) => n.querySelector('.label')?.textContent === ${JSON.stringify(targetName)})
+    row?.querySelector('.tree-enter')?.click()
+    await new Promise((r) => setTimeout(r, 2200))
+    const down = new URLSearchParams(location.search).get('k')
+    const up = document.getElementById('crumbUp')
+    up.click()
+    await new Promise((r) => setTimeout(r, 2000))
+    return { down, up: new URLSearchParams(location.search).get('k'), current: document.querySelector('#crumbs .crumb-current .crumb-label')?.textContent ?? '' }
+  })()`)
+  console.log('上一级按钮:', JSON.stringify(upButton))
+  check('「返回上一级」回到父目录', upButton.up === 'r0', JSON.stringify(upButton))
+
+  // 回到目标目录，后面的菜单断言在它上面做。
+  await send('Page.navigate', { url: `${origin}/reel?k=${encodeURIComponent(targetKey)}` })
+  await waitFor('document.querySelectorAll(".card").length > 0')
+
+  // 「▾」= 这一级的子文件夹清单，只做下钻；范围不再混在里面。
+  const menuProbe = await ev(`(async () => {
+    document.querySelector('.crumb-menu')?.remove()
+    const chevron = document.querySelector('#crumbs .crumb-chevron')
+    if (chevron === null) return { opened: false, reason: '没有 ▾' }
+    chevron.click()
+    const deadline = Date.now() + 8000
+    while (Date.now() < deadline && document.querySelectorAll('.crumb-menu .crumb-menu-item[data-folder-entry]').length === 0) {
+      await new Promise((r) => setTimeout(r, 200))
+    }
+    const menu = document.querySelector('.crumb-menu')
+    if (menu === null) return { opened: false, reason: '菜单没出来' }
+    return {
+      opened: true,
+      rows: [...menu.querySelectorAll('.crumb-menu-item')].map((n) => n.textContent.trim()),
+      hasAllEntry: menu.querySelector('.crumb-menu-item[data-all-entry]') !== null,
+      hasRootEntry: menu.querySelector('.crumb-menu-item[data-root-entry]') !== null,
+      folderRows: menu.querySelectorAll('.crumb-menu-item[data-folder-entry]').length,
+    }
+  })()`)
+  console.log('子文件夹菜单探测:', JSON.stringify(menuProbe))
+  check('点「▾」弹出子文件夹菜单', menuProbe.opened === true, JSON.stringify(menuProbe))
+  check('菜单里只有「本层及以下」和子文件夹', menuProbe.hasAllEntry === true && menuProbe.hasRootEntry === false, JSON.stringify(menuProbe))
+  check('菜单列出了全部子文件夹', menuProbe.folderRows === ${targetSubfolders}, `菜单 ${menuProbe.folderRows} 行 / 目标 ${targetSubfolders} 个`)
+
+  // 范围开关：工具条上独立的一枚，切换后路径行用标记说明当前范围。
+  const allState = await ev(`(async () => {
+    document.querySelector('.crumb-menu')?.remove()
+    const toggle = document.getElementById('scopeToggle')
+    const before = toggle.textContent
+    toggle.click()
+    await new Promise((r) => setTimeout(r, 2500))
+    return {
+      before,
+      after: toggle.textContent,
+      on: toggle.classList.contains('is-on'),
+      crumbs: document.getElementById('crumbs').textContent,
+      url: location.search,
+      cards: document.querySelectorAll('.card').length,
+      summary: document.getElementById('summary').textContent,
+      where: document.querySelectorAll('.card-where').length,
+      whereSample: document.querySelector('.card-where')?.textContent ?? '',
+      storage: localStorage.getItem('mv.scope'),
+    }
+  })()`)
+  console.log('范围开关探测:', JSON.stringify({ dirState, allState }))
+  check('「所有层级」进入递归视图', allState.summary.includes('含所有子目录'), JSON.stringify(allState))
+  check('递归视图留在当前目录', decodeURIComponent(allState.url).includes(targetKey), allState.url)
+  check('开关自己表示状态', allState.on === true && allState.after === '所有层级' && allState.before === '本层', JSON.stringify(allState))
+  check('路径行标出「所有层级」', allState.crumbs.includes('所有层级'), allState.crumbs)
   check('递归模式标出了来源层级', allState.where > 0, `带路径标签的卡片 ${allState.where} 张，例：${allState.whereSample}`)
-  check('面包屑是「全部层级」', allState.crumbs.includes('全部层级'), allState.crumbs)
+
+  // 递归视图的出口：再按一次开关回到本层——只显示这一层的文件，路径行上的
+  // 范围标记消失，摘要不再说「含所有子目录」。
+  const rootOnly = await ev(`(async () => {
+    const toggle = document.getElementById('scopeToggle')
+    toggle.click()
+    await new Promise((r) => setTimeout(r, 2000))
+    return {
+      found: true,
+      on: toggle.classList.contains('is-on'),
+      crumbs: document.getElementById('crumbs').textContent,
+      summary: document.getElementById('summary').textContent,
+      cards: document.querySelectorAll('.card').length,
+      where: document.querySelectorAll('.card-where').length,
+      storage: localStorage.getItem('mv.scope'),
+    }
+  })()`)
+  console.log('范围开关回退探测:', JSON.stringify(rootOnly))
+  check('再按一次开关回到本层', rootOnly.on === false && rootOnly.storage === 'dir', JSON.stringify(rootOnly))
+  check('回本层后路径行不再标范围', rootOnly.crumbs.includes('所有层级') === false, rootOnly.crumbs)
+  check('回本层后摘要不再说含子目录', rootOnly.summary.includes('含所有子目录') === false, rootOnly.summary)
 
   // 只看视频 / 全部的开关。先显式点一下「只看视频」，不依赖前面留下的状态。
   const videoOnly = await ev(`(async () => {
@@ -475,7 +647,8 @@ try {
   check('刷新后目录栏默认展开', afterReload.collapsed === false && afterReload.width >= 200, JSON.stringify(afterReload))
 
   // 递归范围下分组必须也能用（用户点了没反应，就是它被置灰了）。
-  await ev(`document.querySelector('[data-scope-btn="all"]').click()`)
+  // 通过工具条上的范围开关进入所有层级。
+  await enterAllLevels()
   await waitFor('document.querySelectorAll(".card").length > 0')
   check('递归模式下分组按钮可用', (await ev(`document.querySelector('[data-group-btn="folder"]').disabled === false`)) === true)
   await ev(`document.querySelector('[data-group-btn="folder"]').click()`)
@@ -510,9 +683,10 @@ try {
   check('不足一页时不显示任何续页 UI', paging.needsPaging === false || paging.sentinel === true, JSON.stringify(paging))
 
   // ── 9. 树的点击语义：展开 = 浏览，收起 = 不动列表 ──────────────────────
-  // 切回「本目录」范围：递归模式下画的是全层级列表，面包屑不反映当前目录，
-  // 断言「列表切到了那个目录」就没有意义了。
-  await ev(`document.querySelector('[data-scope-btn="dir"]').click()`)
+  // 先回根目录的「本层」视图（面包屑上第一枚名字 + 关掉范围开关）：递归视图会把
+  // 子层级的文件一起刷进来，树点击的断言（卡片数、摘要）要有「只看这一层」的
+  // 参照才有确定意义。
+  await clickCrumbRootEntry()
   await waitFor('document.querySelectorAll(".folder-row, .card").length > 0')
   const treeToggle = await ev(`(async () => {
     const read = () => {
@@ -636,7 +810,7 @@ try {
   }
 
   // 进目录有两个明确入口：行尾的 › 按钮，和双击行。
-  await ev(`document.querySelector('[data-scope-btn="dir"]').click()`)
+  await clickCrumbRootEntry()
   await sleep(800)
   const treeEnter = await ev(`(async () => {
     const row = document.querySelector('#tree .tree-folder')
@@ -679,7 +853,13 @@ try {
   // 一闪而过的，只看终态永远抓不到。
   const samples = await ev(`(async () => {
     const seen = { loadingEl: 0, spinnerEls: 0, pendingClass: 0, spinnerText: 0, samples: 0 }
-    document.querySelector('[data-scope-btn="all"]').click()
+    document.querySelector('.crumb-menu')?.remove()
+    const toggle = document.getElementById('scopeToggle')
+    if (toggle.classList.contains('is-on')) {
+      toggle.click()
+      await new Promise((r) => setTimeout(r, 1200))
+    }
+    toggle.click()
     const deadline = Date.now() + 3000
     while (Date.now() < deadline) {
       seen.samples += 1

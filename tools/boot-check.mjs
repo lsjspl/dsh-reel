@@ -75,7 +75,6 @@ const probes = [
   '/reel/api/session',
   '/reel/api/list',
   '/reel/api/scan',
-  '/reel/api/config',
   '/reel/stream',
   '/reel/download',
   '/reel/thumb',
