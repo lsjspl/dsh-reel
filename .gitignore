@@ -1,0 +1,6 @@
+# 开发与验证过程中的临时产物，不进版本库。
+.testhome/
+node_modules/
+pnpm-lock.yaml
+*.log
+testmedia/

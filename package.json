@@ -1,0 +1,31 @@
+{
+  "name": "dsh-reel",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Browse images and videos from any directory over the dsh web port: a browse/gallery mode and a vertical swipe feed, with a range-streaming video player.",
+  "type": "module",
+  "license": "MIT",
+  "comment": "Deliberately dependency-free: the host half imports only Node built-ins, and the browser half is plain files served as-is. Installing this into a dsh profile adds one Loader row and nothing to the dependency graph, and there is no build step anywhere.",
+  "exports": {
+    ".": "./lib/reel.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node tests/run.mjs",
+    "test:live": "node tests/live.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

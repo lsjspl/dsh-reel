@@ -1,0 +1,32 @@
+# dsh-reel — the bundle layer.
+#
+# This is the only file that touches the dsh composition. Installing this
+# package as a profile dependency adds it to `dsh.profile.bundles`, and this
+# layer is applied on top of the shipped web bundle, so one row is inserted
+# into the live Loader tree. Delete this row (or set `disabled: true`) to take
+# the viewer out of the tree without uninstalling anything.
+#
+# `inject: [webServer]` must be declared at the ROW level, not only in the
+# plugin module: a function plugin's `export const inject` gates its own body,
+# but the HTTP handlers it registers run outside that body, and the first
+# `ctx.webServer` read inside one throws "cannot get property without inject".
+# A profile patch that restates this row's `config` replaces config keys only,
+# so `inject` survives; a patch that omits `inject` breaks the routes, which is
+# why the plugin also reads the service through `ctx.get`.
+- insert:
+    - id: reel
+      name: 'dsh-reel'
+      inject:
+        - webServer
+      config:
+        # Directories offered in the viewer. Empty means: use the directories
+        # named by the REEL_ROOTS environment variable, else
+        # $DSH_HOME/media when it exists.
+        roots: []
+        # Set false to let non-loopback browsers on a LAN bind reach the
+        # viewer; by default it reuses dsh's own browser-trust fence.
+        requireTrustedRequest: true
+        # Optional: an ffmpeg executable used only to render poster frames for
+        # videos. Without it the viewer falls back to the browser's own frame
+        # extraction, which needs no external program at all.
+        # ffmpegPath: 'ffmpeg'
