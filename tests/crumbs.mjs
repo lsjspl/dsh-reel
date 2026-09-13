@@ -134,7 +134,9 @@ class FakeNode {
   get isConnected() {
     let node = this
     while (node.parentElement !== null) node = node.parentElement
-    return node === doc.body || node === doc.documentElement
+    // #document 自己也算「连着」：documentElement 真的挂在它下面（见 doc 的构造），
+    // 否则整棵树的 isConnected 都会变假。
+    return node === doc || node === doc.body || node === doc.documentElement
   }
 
   appendChild(node) {
@@ -321,6 +323,10 @@ function matchSimple(node, part) {
 const doc = new FakeNode('#document')
 doc.documentElement = new FakeNode('html')
 doc.body = new FakeNode('body')
+// documentElement 必须真的挂在 document 下面：`document.querySelector` 是从
+// document 的子节点往下走的，不挂上去它就永远查不到挂在 body 上的浮层菜单，
+// 于是「点『▾』弹出菜单」这类断言会静默地永远查不到东西。
+doc.appendChild(doc.documentElement)
 doc.documentElement.appendChild(doc.body)
 doc.readyState = 'complete'
 doc.activeElement = doc.body
@@ -396,10 +402,11 @@ const keyOf = (folders) => `r0${folders.length === 0 ? '' : `/${folders.join('/'
 
 /**
  * 一层目录的 listing，契约与 host 的 /api/list 一致：
- * `crumbs[0]` 是根，最后一级是当前目录——所以长度为「路径段数 + 1」。
+ * `crumbs[0]` 是库、`crumbs[1]` 是配置目录根、最后一级是当前目录——所以长度是
+ * 「路径段数 + 2」。树的顶层是库，路径行也从库起步，两边说的是同一件事。
  */
 const listingOf = (folders) => {
-  const crumbList = [{ key: 'r0', name: '根目录' }]
+  const crumbList = [{ key: 'lib', name: '库' }, { key: 'r0', name: '根目录' }]
   for (let depth = 0; depth < folders.length - 1; depth += 1) {
     crumbList.push({ key: keyOf(folders.slice(0, depth + 1)), name: folders[depth] })
   }
@@ -408,7 +415,7 @@ const listingOf = (folders) => {
     root: { index: 0, path: 'D:\\根目录', label: '根目录' },
     rel: folders.join('/'),
     key: keyOf(folders),
-    parent: folders.length === 0 ? null : keyOf(folders.slice(0, -1)),
+    parent: folders.length === 0 ? 'lib' : keyOf(folders.slice(0, -1)),
     crumbs: crumbList,
     folders: (TREE[folders.join('/')] ?? []).map((name) => ({
       key: keyOf([...folders, name]),
@@ -440,6 +447,21 @@ const fetchJson = async (url) => {
   }
   if (url.includes('/api/list')) {
     const raw = new URL(url, 'http://x').searchParams.get('k') ?? ''
+    // 库这一层的直接子级是**配置的目录根**（和左树同构），面包屑只有库一枚。
+    if (raw === 'lib') {
+      return {
+        root: { index: -1, path: '', label: '库' },
+        rel: '',
+        key: 'lib',
+        parent: null,
+        crumbs: [{ key: 'lib', name: '库' }],
+        folders: [{ key: 'r0', name: '根目录', kind: 'directory', mtimeMs: 1, hidden: false, mediaCount: 2 }],
+        files: [],
+        offset: 0,
+        nextOffset: null,
+        fileCount: 0,
+      }
+    }
     const path = raw.replace(/^r\d+\/?/, '')
     return listingOf(path === '' ? [] : path.split('/'))
   }
@@ -510,6 +532,9 @@ const sandbox = {
   console,
   performance: { now: () => Date.now() },
   CSS: { escape: (value) => String(value).replace(/["\\]/g, '\\$&') },
+  // app.js 画平铺网格时要读一次列的间距（量列数用）。替身没有真实布局，
+  // getBoundingClientRect 全是 0，那边会退回「一列」，这里给个值就够。
+  getComputedStyle: () => ({ columnGap: '0px' }),
   URL,
   URLSearchParams,
   Date,
@@ -590,37 +615,37 @@ const at = async (folders) => {
 
 // ── 用例 ──────────────────────────────────────────────────────────────────
 
-// 1. 根目录：**一枚**路径，加粗、带自己那级的「▾」。早先这里是「可点的根 +
-//    另一枚同名的当前层标记」，同一件事画两遍。
+// 1. 配置目录根：路径行从**库**起步（树顶就是库），根那一枚当前层加粗、带自己
+//    那级的「▾」；库那一枚可点（回库），根的「上一级」也就是回库。
 const root = await at([])
-checkEqual('根目录只有一枚路径', [root.names, root.current, root.levels], [['根目录'], '根目录', 1])
-check('根目录那枚不可点（没有去处）', root.links.length === 0, JSON.stringify(root))
-check('根目录带自己那级的「▾」', root.chevrons === 1, JSON.stringify(root))
-check('根目录没有分隔符也没有「…」', root.separators === 0 && root.folds === 0, JSON.stringify(root))
-check('根目录上「返回上一级」是灰的', root.upDisabled === true, JSON.stringify(root))
+checkEqual('配置目录的路径行是「库 › 根」', [root.names, root.current, root.levels], [['库', '根目录'], '根目录', 2])
+check('根那一枚不可点（没有去处），库那一枚可点', root.links.join(',') === '库', JSON.stringify(root))
+check('库与根各带自己那级的「▾」', root.chevrons === 2, JSON.stringify(root))
+check('两级之间一枚分隔符、没有「…」', root.separators === 1 && root.folds === 0, JSON.stringify(root))
+check('根目录上「返回上一级」可用（那一级是库）', root.upDisabled === false, JSON.stringify(root))
 
-// 2. 一层：根可点，当前层与根是同一套画法，只是不可点。
+// 2. 一层：库可点、根可点，当前层与它们是同一套画法，只是不可点。
 const one = await at(['a'])
-checkEqual('一层路径：根可点、当前层加粗', [one.links, one.current], [['根目录'], 'a'])
-check('一层路径只有一个分隔符', one.separators === 1, JSON.stringify(one))
+checkEqual('一层路径：库与根都可点、当前层加粗', [one.links, one.current], [['库', '根目录'], 'a'])
+check('一层路径有两个分隔符', one.separators === 2, JSON.stringify(one))
 check('「返回上一级」可用', one.upDisabled === false)
-check('有子文件夹的两级都挂「▾」', one.chevrons === 2, JSON.stringify(one))
+check('有子文件夹的每一级都挂「▾」', one.chevrons === 3, JSON.stringify(one))
 
 // 2b. 当前层没有子文件夹时不挂「▾」——点开空菜单没有意义。
 const leaf = await at(['b'])
-checkEqual('空文件夹的当前层不挂「▾」', [leaf.chevrons, leaf.current], [1, 'b'])
+checkEqual('空文件夹的当前层不挂「▾」', [leaf.chevrons, leaf.current], [2, 'b'])
 
-// 3. 两层：根 + 父级 + 当前层全部直给，不折。
+// 3. 两层：库 + 根 + 父级 + 当前层全部直给，不折。
 const two = await at(['a', 'a1'])
-checkEqual('两层路径：根与父级可点，当前层加粗', [two.links, two.current], [['根目录', 'a'], 'a1'])
+checkEqual('两层路径：库、根与父级可点，当前层加粗', [two.links, two.current], [['库', '根目录', 'a'], 'a1'])
 check('两层不出现「…」', two.folds === 0, JSON.stringify(two))
-check('两层路径用两个分隔符串起三级', two.separators === 2, JSON.stringify(two))
+check('两层路径用三个分隔符串起四级', two.separators === 3, JSON.stringify(two))
 
-// 4. 七层：中间收成一枚「…」，根、当前层与当前层的父级保住。
+// 4. 七层：中间收成一枚「…」，库、根、当前层与当前层的父级保住。
 renderLog.length = 0
 const deep = await at(['a', 'a1', 'a1x', 'deep', 'deeper', 'deepest'])
 if (process.env.CRUMB_DEBUG === '1') console.log('  本层重画次数:', renderLog.length, '各次重画前节点数:', JSON.stringify(renderLog))
-checkEqual('深路径保住根、当前层与父级', [deep.links, deep.current], [['根目录', 'deeper'], 'deepest'])
+checkEqual('深路径保住库、根、当前层与父级', [deep.links, deep.current], [['库', '根目录', 'deeper'], 'deepest'])
 if (process.env.CRUMB_DEBUG === '1') {
   const host = crumbHost()
   const seps = host.querySelectorAll('.crumb-sep')
@@ -632,27 +657,42 @@ if (process.env.CRUMB_DEBUG === '1') {
   }
 }
 check('深路径把中间收成「…」', deep.folds === 1, JSON.stringify(deep))
-check('深路径不换行（分隔符数与可见级数一致）', deep.separators === 3, JSON.stringify(deep))
+check('深路径不换行（分隔符数与可见级数一致）', deep.separators === 4, JSON.stringify(deep))
 check('深路径的「…」说明省略了哪几级', crumbHost().querySelector('.crumb-fold').title.includes('a1'), crumbHost().querySelector('.crumb-fold').title)
 
-// 5. 点「…」摊平：中间层级全部变成可点的名字（根、当前层、父级本来就直给）。
+// 5. 点「…」摊平：中间层级全部变成可点的名字（库、根、当前层、父级本来就直给）。
 crumbHost().querySelector('.crumb-fold').click()
 await sleep(20)
 const expanded = shape()
-checkEqual('点「…」后中间层级摊平', expanded.links, ['根目录', 'a', 'a1', 'a1x', 'deep', 'deeper'])
+checkEqual('点「…」后中间层级摊平', expanded.links, ['库', '根目录', 'a', 'a1', 'a1x', 'deep', 'deeper'])
 check('摊平后不再有「…」', expanded.folds === 0, JSON.stringify(expanded))
 check('摊平后当前层不变', expanded.current === 'deepest', JSON.stringify(expanded))
 
 // 6. 点名字 = 直接导航到那一层（不再弹菜单）。
-crumbHost().querySelectorAll('.crumb-name')[1].click()
+const crumbNamed = (label) => crumbHost().querySelectorAll('.crumb-name').find((node) => node.textContent === label)
+crumbNamed('a').click()
 await sleep(60)
 const afterJump = shape()
 check('点中间层级直接跳过去', afterJump.current === 'a', JSON.stringify(afterJump))
 check('跳过去之后「…」收回', afterJump.folds === 0, JSON.stringify(afterJump))
 check('跳过去之后没弹出菜单', doc.querySelector('.crumb-menu') === null)
 
-// 7. 「▾」只弹子文件夹，不再混范围。
-const chevron = crumbHost().querySelectorAll('.crumb-chevron')[0]
+// 7. 「▾」只弹子文件夹，不再混范围。库那一枚列的是**配置目录本身**（库的直接
+//    子级），根那一枚列的才是它下面的子文件夹。
+const libChevron = crumbHost().querySelectorAll('.crumb-chevron')[0]
+libChevron.click()
+await sleep(80)
+const libMenu = doc.querySelector('.crumb-menu')
+check('库的「▾」弹出菜单', libMenu !== null)
+if (libMenu !== null) {
+  checkEqual(
+    '库的「▾」列的是配置目录本身',
+    libMenu.querySelectorAll('.crumb-menu-item[data-folder-entry]').map((node) => ({ name: node.querySelector('.crumb-menu-name').textContent, key: node.dataset.folderEntry })),
+    [{ name: '根目录', key: 'r0' }],
+  )
+}
+
+const chevron = crumbHost().querySelectorAll('.crumb-chevron')[1]
 chevron.click()
 await sleep(80)
 const menu = doc.querySelector('.crumb-menu')
@@ -664,17 +704,20 @@ if (menu !== null) {
   check('菜单里没有「只看根目录这一层」的旧项', menu.querySelector('.crumb-menu-item[data-root-entry]') === null)
   checkEqual('菜单里是这一级的子文件夹', menu.querySelectorAll('.crumb-menu-item[data-folder-entry]').map((node) => node.querySelector('.crumb-menu-name').textContent), ['a', 'b'])
   checkEqual('菜单带上每个子目录的媒体数', menu.querySelectorAll('.crumb-menu-tally').map((node) => node.textContent), ['2 个', '空'])
-  // 点一个子文件夹即导航，菜单关掉。
-  rows[1].click()
+  // 点一个子文件夹即导航，菜单关掉（第一行就是 a）。
+  rows[0].click()
   await sleep(60)
   check('点菜单里的子文件夹会进去', shape().current === 'a', JSON.stringify(shape()))
   check('进去之后菜单关掉', doc.querySelector('.crumb-menu') === null)
 }
 
-// 8. 范围功能已经整体删掉：工具条上没有这枚开关，路径行上也没有范围标记，
+// 8. 范围功能已经整体删掉：页面里没有这枚开关，路径行上也没有范围标记，
 //    也不会再往 localStorage 里写 mv.scope。
+//
+//    「没有这枚开关」只能查页面源码：替身的 getElementById 对任何 id 都会现场
+//    造一个节点（app.js 的元素表就是这么建的），所以查 DOM 永远查得到。
 const scopeGone = await at(['a'])
-check('工具条上没有范围开关', doc.getElementById('scopeToggle') === null || doc.getElementById('scopeToggle').isConnected === false)
+check('工具条上没有范围开关', !readFileSync(join(here, '..', 'lib', 'assets', 'index.html'), 'utf8').includes('scopeToggle'))
 check('路径行上没有「所有层级」标记', crumbHost().querySelectorAll('.crumb-scope, .crumb-current').length === 0, JSON.stringify(scopeGone))
 check('没有再写 mv.scope', localStorage.getItem('mv.scope') === null, String(localStorage.getItem('mv.scope')))
 
@@ -698,3 +741,7 @@ if (failures.length === 0) {
   for (const failure of failures) console.log(`  ✗ ${failure}`)
   process.exitCode = 1
 }
+
+// 替身里还留着 app.js 挂的定时器（悬停预览的防抖之类），不显式退出的话 node
+// 会一直等它们——结果是断言全打完了、进程却不结束，CI 里就是「卡住」。
+process.exit(process.exitCode ?? 0)

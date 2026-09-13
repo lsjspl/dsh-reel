@@ -8,7 +8,7 @@
  * 用法：node tests/library.mjs
  * Chrome 路径默认取 verify-ui 的同一条；可用 CHROME_PATH 覆盖。
  */
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -40,6 +40,24 @@ writeFileSync(join(rootA, 'alpha.jpg'), Buffer.alloc(200, 1))
 writeFileSync(join(rootA, '照片', 'beta.jpg'), Buffer.alloc(200, 1))
 writeFileSync(join(rootB, 'gamma.mp4'), Buffer.alloc(300, 1))
 writeFileSync(join(rootB, '视频', 'delta.mp4'), Buffer.alloc(300, 1))
+
+// 可选：REEL_FFMPEG 指向真实 ffmpeg 时，生成一个 AVI 来验证「老格式转码后
+// 真的能在浏览器里播」。没有它时这一组断言整体跳过。
+const FFMPEG = process.env.REEL_FFMPEG ?? ''
+let ffmpegOk = false
+if (FFMPEG !== '' && existsSync(FFMPEG)) {
+  try {
+    execFileSync(FFMPEG, [
+      '-hide_banner', '-loglevel', 'error',
+      '-f', 'lavfi', '-i', 'testsrc=duration=6:size=160x120:rate=10',
+      '-c:v', 'mpeg4',
+      '-y', join(rootA, '照片', 'clip.avi'),
+    ], { stdio: 'ignore', windowsHide: true })
+    ffmpegOk = true
+  } catch (error) {
+    console.log(`（REEL_FFMPEG 无法运行，跳过老格式播放验证：${String(error.message).split('\n')[0]}）`)
+  }
+}
 
 /** 最小 cordis 替身：只实现插件真正用到的那部分（同 run.mjs）。 */
 function fakeContext() {
@@ -92,7 +110,11 @@ function dispatch(routes) {
 }
 
 const harness = fakeContext()
-apply(harness.ctx, Config['~standard'].validate({ roots: [rootA, rootB], requireTrustedRequest: true }).value)
+apply(harness.ctx, Config['~standard'].validate({
+  roots: [rootA, rootB],
+  ...(ffmpegOk ? { ffmpegPath: FFMPEG } : {}),
+  requireTrustedRequest: true,
+}).value)
 const server = createServer(dispatch(harness.routes))
 await new Promise((settle) => server.listen(0, '127.0.0.1', settle))
 const origin = `http://127.0.0.1:${server.address().port}`
@@ -242,7 +264,9 @@ try {
   check('搜索提示改为整个库', libClick.placeholder.includes('整个库'), libClick.placeholder)
   check('路径行是「库」', libClick.crumb.includes('库'), libClick.crumb)
   check('库里「返回上一级」不可用', libClick.upDisabled === true)
-  check('库列出两个根的全部媒体', libClick.keys.length === 4, libClick.keys.join(','))
+  // AVI 那一份让总数多一个：它也是库里的媒体。
+  const totalMedia = ffmpegOk ? 5 : 4
+  check(`库列出两个根的全部媒体（${totalMedia} 个）`, libClick.keys.length === totalMedia, libClick.keys.join(','))
   check(
     '库里两种根的文件都在',
     ['r0/alpha.jpg', 'r0/%E7%85%A7%E7%89%87/beta.jpg', 'r1/gamma.mp4', 'r1/%E8%A7%86%E9%A2%91/delta.mp4'].every((key) => libClick.keys.includes(key)),
@@ -274,6 +298,137 @@ try {
   console.log('回到根目录:', JSON.stringify(backToRoot))
   check('点回第一个根目录', backToRoot.k === 'r0', backToRoot.k)
   check('根目录下搜索提示回到当前目录', backToRoot.placeholder.includes('当前目录'), backToRoot.placeholder)
+
+  // ── 路径行从库起步 ───────────────────────────────────────────────────────
+  //
+  // 树顶是库，路径行也该从库起步：库 › 配置目录 › 子目录。库那一枚的「▾」列的
+  // 是**库的直接子级**（各配置目录），配置目录那一枚的「上一级」就是回库——和
+  // 左树画的父子关系完全一致。
+
+  const crumbLevels = `[...document.querySelectorAll('#crumbs .crumb')].map((node) => ({
+    name: node.querySelector('.crumb-name').textContent,
+    current: node.classList.contains('is-current'),
+    clickable: node.querySelector('.crumb-name').disabled === false,
+    ico: node.querySelector('.crumb-ico')?.textContent ?? '',
+    chevron: node.querySelector('.crumb-chevron') !== null,
+  }))`
+
+  const atRoot = await ev(`(async () => {
+    const levels = ${crumbLevels}
+    const up = document.getElementById('crumbUp')
+    const upDisabled = up.disabled
+    up.click()
+    await new Promise((r) => setTimeout(r, 1800))
+    return {
+      levels,
+      upDisabled,
+      k: new URLSearchParams(location.search).get('k'),
+      upToLib: ${crumbLevels},
+    }
+  })()`)
+  console.log('根的路径行:', JSON.stringify(atRoot))
+  check('配置目录的路径行是「库 › 根」', atRoot.levels.length === 2 && atRoot.levels[0].name === '库' && atRoot.levels[1].name === 'A 盘', JSON.stringify(atRoot.levels))
+  check('库那一枚带书堆图标、根那一枚是当前层', atRoot.levels[0].ico === '📚' && atRoot.levels[0].clickable === true && atRoot.levels[1].current === true, JSON.stringify(atRoot.levels))
+  check('根的「上一级」可用，点了回库', atRoot.upDisabled === false && atRoot.k === 'lib', `${atRoot.upDisabled} / ${atRoot.k}`)
+  check('库里的路径行只剩库一枚、上一级变灰', atRoot.upToLib.length === 1 && atRoot.upToLib[0].name === '库', JSON.stringify(atRoot.upToLib))
+
+  const libMenu = await ev(`(async () => {
+    document.querySelector('#crumbs .crumb-chevron').click()
+    await new Promise((r) => setTimeout(r, 1200))
+    const rows = [...document.querySelectorAll('.crumb-menu .crumb-menu-item')].map((node) => ({
+      name: node.querySelector('.crumb-menu-name').textContent,
+      key: node.dataset.folderEntry,
+      tally: node.querySelector('.crumb-menu-tally')?.textContent ?? '',
+    }))
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    return { rows, closed: document.querySelector('.crumb-menu') === null }
+  })()`)
+  console.log('库的「▾」:', JSON.stringify(libMenu))
+  check('库的「▾」列出的是配置目录本身', libMenu.rows.map((row) => row.name).join(',') === 'A 盘,B 盘', JSON.stringify(libMenu.rows))
+  check('库的「▾」给的是根的键', libMenu.rows.map((row) => row.key).join(',') === 'r0,r1', JSON.stringify(libMenu.rows))
+  check('库的「▾」每行带媒体数', libMenu.rows.every((row) => row.tally !== ''), JSON.stringify(libMenu.rows))
+  check('Escape 关掉菜单', libMenu.closed === true)
+
+  // 回到第一个根，后面几段接着在这个状态上做。
+  await ev(`(async () => {
+    document.querySelectorAll('#tree .tree-root-name')[0].click()
+    await new Promise((r) => setTimeout(r, 1800))
+  })()`)
+
+  // ── 老格式（AVI）边转边播：看哪转哪 ─────────────────────────────────────
+  if (ffmpegOk) {
+    const playback = await ev(`(async () => {
+      const waitFor = async (test, ms) => {
+        const deadline = Date.now() + ms
+        while (Date.now() < deadline) {
+          if (test()) return true
+          await new Promise((r) => setTimeout(r, 400))
+        }
+        return false
+      }
+      // AVI 在子目录里，先切到「全部」让它的卡片出现在屏幕上。
+      document.querySelector('[data-content-btn="all"]').click()
+      await waitFor(() => [...document.querySelectorAll('.card[data-key]')].some((n) => String(n.dataset.key).includes('clip.avi')), 10000)
+      const card = [...document.querySelectorAll('.card[data-key]')].find((n) => String(n.dataset.key).includes('clip.avi'))
+      if (card === undefined) {
+        return { skipped: true, cards: [...document.querySelectorAll('.card[data-key]')].map((n) => n.dataset.key) }
+      }
+
+      card.click()
+      const video = document.getElementById('video')
+      const time = document.getElementById('timeLabel')
+      const positionSeconds = () => {
+        const head = String(time.textContent).split('/')[0].trim()
+        const [m, s] = head.split(':').map(Number)
+        return (m || 0) * 60 + (s || 0)
+      }
+
+      // 第一段流：边转边播，第一片到达就能解码。
+      const started = await waitFor(() => video.readyState >= 2, 30000)
+      // 时长来自 ffprobe 的探测值（流本身没有可信时长），等它显示出来。
+      const labelKnown = await waitFor(() => String(time.textContent).includes('/ 0:06'), 25000)
+      const first = { src: video.getAttribute('src'), label: time.textContent, error: video.error?.code ?? null }
+
+      // 往后跳 5 秒：流式条目没有索引，播放器应当换一条从 t=5 开始的新流。
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+      const seeked = await waitFor(() => video.readyState >= 2 && positionSeconds() >= 4, 30000)
+      const badge = card.querySelector('.duration-badge')
+      // 等卡片角标把探测到的时长画出来（诊断：看出没出探测结果）。
+      await waitFor(() => badge !== null && String(badge.textContent).trim() !== '', 8000)
+      return {
+        skipped: false,
+        playerOpen: document.getElementById('player').hidden === false,
+        started,
+        labelKnown,
+        firstSrc: first.src,
+        firstLabel: first.label,
+        error: first.error,
+        seeked,
+        seekSrc: video.getAttribute('src'),
+        seekLabel: time.textContent,
+        cardDuration: badge === null ? null : badge.textContent,
+        formatChip: (() => {
+          const chip = card.querySelector('.format-chip')
+          return chip === null ? null : chip.textContent
+        })(),
+      }
+    })()`)
+    console.log('AVI 边转边播:', JSON.stringify(playback))
+    check('AVI 卡片在页面上', playback.skipped !== true, JSON.stringify(playback))
+    check('点开 AVI 打开播放器', playback.playerOpen === true, JSON.stringify(playback))
+    check('AVI 走的是转码流地址', String(playback.firstSrc).includes('/reel/transcode'), String(playback.firstSrc))
+    check('第一片到达就能解码（readyState≥2）', playback.started === true, JSON.stringify(playback))
+    check('播放没有报错', playback.error === null, String(playback.error))
+    check('时长用探测值显示', playback.labelKnown === true && /\/\s*0:0[56]/.test(String(playback.firstLabel)), String(playback.firstLabel))
+    check('卡片角标也补上了时长', /0:0[56]/.test(String(playback.cardDuration)), String(playback.cardDuration))
+    check('视频卡片带格式小标签', playback.formatChip === 'AVI', String(playback.formatChip))
+    check('右跳 5 秒后重新出画', playback.seeked === true, JSON.stringify(playback))
+    check('跳转是换一条从目标时间开始的新流', /&t=[45]$/.test(String(playback.seekSrc)), String(playback.seekSrc))
+    await ev('document.getElementById("btnClose").click()')
+    await sleep(300)
+  } else {
+    console.log('未提供 REEL_FFMPEG，跳过老格式转码播放验证')
+  }
 
   check('控制台没有异常', errors.length === 0, errors.slice(0, 3).join(' | '))
 } catch (error) {

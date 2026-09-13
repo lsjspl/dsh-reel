@@ -97,17 +97,18 @@ const setUiState = async (want) => {
 }
 
 /**
- * 回到根目录：点路径行上第一枚（根）名字。
+ * 回到根目录：点路径行上的**配置目录根**那一枚（路径行是「库 › 根 › …」，根是
+ * 第二枚，data-depth="1"）。
  *
- * 面包屑名字现在就是导航本身——点根名字 = 回根目录这一层。已经在根上时，
- * 路径行里根本没有「根」这一枚（当前层不是按钮），那就是已经到了。
+ * 面包屑名字就是导航本身——点根名字 = 回根目录这一层。已经在根上时那一枚是当前
+ * 层（不是按钮），那就是已经到了。
  *
  * @returns {Promise<boolean>} 当前确实在根目录上。
  */
 const clickCrumbRootEntry = async () => {
   const ok = await ev(`(async () => {
     if (new URLSearchParams(location.search).get('k') !== 'r0') {
-      const root = document.querySelector('#crumbs .crumb-name[data-depth="0"]')
+      const root = document.querySelector('#crumbs .crumb-name[data-depth="1"]')
       if (root === null) return false
       root.click()
       await new Promise((r) => setTimeout(r, 1500))
@@ -204,22 +205,19 @@ try {
   const session = rootInfo.apiRoots.length
   const treeRoots = rootInfo.treeRoots
 
-  // 手工再画一次树：能画出来说明是时序问题，画不出来说明是循环本身的问题。
+  // 手工再对一次账：接口认为有几个根，树里画了几个根。
+  //
+  // 早先这里还会点开设置抽屉、数里面列了几个目录。抽屉已经拆掉（目录改在 dsh
+  // 的插件配置里加），所以现在只剩接口和树这两处可比，点一个已经不存在的按钮
+  // 只会把整轮测试打断。
   const rootCause = await ev(`(async () => {
     const response = await fetch('/reel/api/session').then((r) => r.json())
-    // app.js 是 IIFE，内部状态拿不到；只能从可观察的行为推断。
-    // 线索一：API 返回几个根。
-    // 线索二：树里画了几个根。
-    // 线索三：其它用到 roots 的地方（设置抽屉）认为有几个。
-    document.getElementById('settingsBtn').click()
-    await new Promise((r) => setTimeout(r, 1200))
-    const listedInDrawer = document.querySelectorAll('#rootList .root-item').length
-    const drawerText = document.getElementById('rootList').textContent.replace(/\\s+/g, ' ').trim().slice(0, 160)
-    document.getElementById('drawerClose').click()
-    return { apiRoots: response.roots.length, listedInDrawer, drawerText }
+    return {
+      apiRoots: response.roots.length,
+      treeRoots: document.querySelectorAll('#tree .tree-root').length,
+    }
   })()`)
-  console.log('API 根数:', rootCause.apiRoots, '| 抽屉里列出:', rootCause.listedInDrawer)
-  console.log('抽屉文本:', rootCause.drawerText)
+  console.log('API 根数:', rootCause.apiRoots, '| 树里的根数:', rootCause.treeRoots)
   check(`侧栏列出全部 ${session} 个根目录`, treeRoots === session, `树里有 ${treeRoots} 个`)
 
   const rootLabels = await ev('[...document.querySelectorAll("#tree .tree-root-name")].map(n=>n.textContent.trim()).join(" | ")')
@@ -237,24 +235,34 @@ try {
   }
 
   // ── 2. 文件夹是一行一个，不是卡片 ─────────────────────────────────────
+  //
+  // 「当前」这一层早先把子文件夹画成一排窄条（`.folder-row`）。现在文件夹不进
+  // 网格了——左右两边分别是目录树和路径行的「▾」菜单——所以这几条只在旧元素还在
+  // 时才检查；类已经没了就跳过，免得整轮测试断在一个不存在的选择器上。
+  //
   // 点名字是切换展开，所以这里用「先确保展开」的方式回到第一个根的内容。
   await ev(`(async () => {
     const wrapper = document.querySelectorAll('#tree .tree-root')[0]
     if (wrapper.querySelector('.tree-children').hidden) wrapper.querySelector('.tree-root-name').click()
     return true
   })()`)
-  check('第一个根展开后有数据', await waitFor('document.querySelectorAll(".folder-row").length > 0'))
+  check('第一个根展开后有数据', await waitFor('document.querySelectorAll("#tree .tree-folder").length > 0'))
   const folderRow = await ev(`(() => {
     const row = document.querySelector('.folder-row')
+    if (row === null) return { skipped: true }
     const rect = row.getBoundingClientRect()
     const cs = getComputedStyle(row)
-    return { h: Math.round(rect.height), w: Math.round(rect.width), display: cs.display, hasThumb: row.querySelector('img, video') !== null }
+    return { skipped: false, h: Math.round(rect.height), w: Math.round(rect.width), display: cs.display, hasThumb: row.querySelector('img, video') !== null }
   })()`)
-  check('文件夹行是窄条不是大卡片', folderRow.h < 60, `高度 ${folderRow.h}px`)
-  check('文件夹行里没有缩略图', folderRow.hasThumb === false)
-  const folderCount = await ev('document.querySelectorAll(".folder-row").length')
-  const cardCount = await ev('document.querySelectorAll(".card").length')
-  check('文件夹与媒体分开渲染', folderCount > 0 && cardCount > 0, `文件夹 ${folderCount} 行 / 媒体 ${cardCount} 张`)
+  if (folderRow.skipped === true) {
+    console.log('没有 .folder-row（文件夹已不画进网格），跳过「窄条」两条断言')
+  } else {
+    check('文件夹行是窄条不是大卡片', folderRow.h < 60, `高度 ${folderRow.h}px`)
+    check('文件夹行里没有缩略图', folderRow.hasThumb === false)
+    const folderCount = await ev('document.querySelectorAll(".folder-row").length')
+    const cardCount = await ev('document.querySelectorAll(".card").length')
+    check('文件夹与媒体分开渲染', folderCount > 0 && cardCount > 0, `文件夹 ${folderCount} 行 / 媒体 ${cardCount} 张`)
+  }
 
   // ── 3. 路径行：点名字就进那一层，「▾」管子文件夹，范围是独立开关 ────────
   // 目标目录用「根目录里第一个有内容、自己还有子文件夹的子文件夹」，而不是写死
@@ -289,29 +297,41 @@ try {
     upDisabled: document.getElementById('crumbUp').disabled,
   }))()`)
   console.log('路径行结构:', JSON.stringify(dirState))
-  check('路径行把根和当前层分开了', dirState.names.length === 2 && dirState.separators === 1, dirState.crumbs)
-  check('根可点、当前层不可点', dirState.links.length === 1 && dirState.links[0] !== targetName, JSON.stringify(dirState))
+  check('路径行从库起步：库 › 根 › 当前层', dirState.names.length === 3 && dirState.names[0] === '库' && dirState.separators === 2, dirState.crumbs)
+  check('库与根可点、当前层不可点', dirState.links.length === 2 && dirState.links[0] === '库' && dirState.links[1] !== targetName, JSON.stringify(dirState))
   check('当前层写出了目录名', dirState.currentLabel === targetName, `「${dirState.currentLabel}」/ 目标「${targetName}」`)
   check('子目录里「返回上一级」可用', dirState.upDisabled === false)
 
   // 点根名字 = 直接回根目录这一层。旧设计这里弹的是菜单。
+  // 顺带钉住「根的上一级是库」：库是树顶，路径行和左树说的是同一件事。
   const clickRootName = await ev(`(async () => {
-    const root = document.querySelector('#crumbs .crumb-name[data-depth="0"]')
+    const root = document.querySelector('#crumbs .crumb-name[data-depth="1"]')
     if (root === null) return { clicked: false }
     root.click()
     await new Promise((r) => setTimeout(r, 2000))
-    return {
+    const atRoot = {
       clicked: true,
       menuOpened: document.querySelector('.crumb-menu') !== null,
       key: new URLSearchParams(location.search).get('k'),
       current: document.querySelector('#crumbs .crumb.is-current .crumb-name')?.textContent ?? '',
       upDisabled: document.getElementById('crumbUp').disabled,
+      names: [...document.querySelectorAll('#crumbs .crumb-name')].map((n) => n.textContent),
+    }
+    document.getElementById('crumbUp').click()
+    await new Promise((r) => setTimeout(r, 2000))
+    return {
+      ...atRoot,
+      upTo: new URLSearchParams(location.search).get('k'),
+      upNames: [...document.querySelectorAll('#crumbs .crumb-name')].map((n) => n.textContent),
     }
   })()`)
   console.log('点根名字:', JSON.stringify(clickRootName))
   check('点名字直接导航，不再弹菜单', clickRootName.clicked === true && clickRootName.menuOpened === false, JSON.stringify(clickRootName))
   check('点根名字回到了根', clickRootName.key === 'r0', `${clickRootName.key} / 当前层「${clickRootName.current}」`)
-  check('根目录上「返回上一级」不可用', clickRootName.upDisabled === true)
+  check('根的路径行是「库 › 根」', clickRootName.names.length === 2 && clickRootName.names[0] === '库', JSON.stringify(clickRootName.names))
+  check('根的「返回上一级」可用（那一级是库）', clickRootName.upDisabled === false, String(clickRootName.upDisabled))
+  check('根的上一级回到库', clickRootName.upTo === 'lib', String(clickRootName.upTo))
+  check('库里路径行只剩库一枚、上一级不可用', clickRootName.upNames.join('›') === '库', JSON.stringify(clickRootName.upNames))
 
   // 「返回上一级」按钮：回根之后用它再进目标目录，顺带钉住它真的能上来。
   const upButton = await ev(`(async () => {
@@ -331,11 +351,16 @@ try {
   await send('Page.navigate', { url: `${origin}/reel?k=${encodeURIComponent(targetKey)}` })
   await waitFor('document.querySelectorAll(".card").length > 0')
 
-  // 「▾」= 这一级的子文件夹清单，只做下钻；范围不再混在里面。
+  // 「▾」= **这一级**的子文件夹清单，只做下钻；范围不再混在里面。
+  //
+  // 选当前这一层那枚「▾」（data-crumb-chevron 就是这一级的键）：路径行现在是
+  // 「库 › 根 › …」，头一枚列的是配置目录、第二枚列的是根的下一层，都不是
+  // 「当前这一层」。
   const menuProbe = await ev(`(async () => {
     document.querySelector('.crumb-menu')?.remove()
-    const chevron = document.querySelector('#crumbs .crumb-chevron')
-    if (chevron === null) return { opened: false, reason: '没有 ▾' }
+    const key = new URLSearchParams(location.search).get('k')
+    const chevron = [...document.querySelectorAll('#crumbs .crumb-chevron')].find((n) => n.dataset.crumbChevron === key)
+    if (chevron === undefined) return { opened: false, reason: '当前这一层没有 ▾' }
     chevron.click()
     const deadline = Date.now() + 8000
     while (Date.now() < deadline && document.querySelectorAll('.crumb-menu .crumb-menu-item[data-folder-entry]').length === 0) {
@@ -352,9 +377,14 @@ try {
     }
   })()`)
   console.log('子文件夹菜单探测:', JSON.stringify(menuProbe))
-  check('点「▾」弹出子文件夹菜单', menuProbe.opened === true, JSON.stringify(menuProbe))
-  check('菜单里只有子文件夹（范围已不在菜单里）', menuProbe.hasAllEntry === false && menuProbe.hasRootEntry === false, JSON.stringify(menuProbe))
-  check('菜单列出了全部子文件夹', menuProbe.folderRows === targetSubfolders, `菜单 ${menuProbe.folderRows} 行 / 目标 ${targetSubfolders} 个`)
+  if (targetSubfolders === 0) {
+    // 没有子文件夹的层不挂「▾」——点开一个空菜单没有意义。
+    check('没有子文件夹的层不挂「▾」', menuProbe.opened === false, JSON.stringify(menuProbe))
+  } else {
+    check('点「▾」弹出子文件夹菜单', menuProbe.opened === true, JSON.stringify(menuProbe))
+    check('菜单里只有子文件夹（范围已不在菜单里）', menuProbe.hasAllEntry === false && menuProbe.hasRootEntry === false, JSON.stringify(menuProbe))
+    check('菜单列出了全部子文件夹', menuProbe.folderRows === targetSubfolders, `菜单 ${menuProbe.folderRows} 行 / 目标 ${targetSubfolders} 个`)
+  }
 
   // 范围开关已经删掉：工具条上没有这枚按钮，路径行也不再标「所有层级」。
   const scopeGone = await ev(`(() => ({
@@ -918,7 +948,7 @@ try {
   // 攥着节点引用连续发键。
   const keyboard = await ev(`(async () => {
     const tree = document.getElementById('tree')
-    const rows = () => [...tree.querySelectorAll('.tree-root-name, .tree-folder')]
+    const rows = () => [...tree.querySelectorAll('.tree-root-name, .tree-library-name, .tree-folder')]
     const active = () => document.activeElement?.dataset?.label ?? '(无)'
     const fire = (node, key) => node.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
     if (rows().length < 2) return { skipped: true }
@@ -974,6 +1004,197 @@ try {
 
   const selectable = await ev(`getComputedStyle(document.getElementById('tree')).userSelect`)
   check('目录树不可选中文字（双击不会选中）', selectable === 'none', selectable)
+
+  // ── 12. 播放器：默认窗口播放，「页面全屏」是单独一步 ────────────────────
+  //
+  // 点开视频应当先给一个不是整页的窗口；只有点了「页面全屏」才铺满这一页。
+  // 关闭与全屏相关的按钮都在视频**上方**那条浮动条上，下面的控件条里没有。
+  await setUiState({ kinds: 'video', content: 'current', atRoot: true })
+  const playerOpen = await ev(`(async () => {
+    const card = document.querySelector('.card-video')?.closest('.card')
+    if (card === undefined || card === null) return { skipped: true }
+    card.click()
+    await new Promise((r) => setTimeout(r, 1500))
+    const player = document.getElementById('player')
+    const box = document.getElementById('playerWindow').getBoundingClientRect()
+    const top = document.getElementById('playerTop')
+    const bottom = document.getElementById('playerChrome')
+    const holds = (host, id) => host.querySelector('#' + id) !== null
+    return {
+      skipped: false,
+      open: player.hidden === false,
+      pageFull: player.classList.contains('is-page-full'),
+      gapX: Math.round(window.innerWidth - box.width),
+      gapY: Math.round(window.innerHeight - box.height),
+      closeInTop: holds(top, 'btnClose'),
+      fullscreenInTop: holds(top, 'btnFullscreen'),
+      pageFullInTop: holds(top, 'btnPageFullscreen'),
+      closeInBottom: holds(bottom, 'btnClose'),
+      fullscreenInBottom: holds(bottom, 'btnFullscreen'),
+    }
+  })()`)
+  console.log('播放器窗口:', JSON.stringify(playerOpen))
+  if (playerOpen.skipped !== true) {
+    check('点视频卡片打开播放器', playerOpen.open === true, JSON.stringify(playerOpen))
+    check('打开时不是页面全屏', playerOpen.pageFull === false)
+    check('窗口四周留白（不是整页）', playerOpen.gapX > 0 && playerOpen.gapY > 0, `左右 ${playerOpen.gapX}px，上下 ${playerOpen.gapY}px`)
+    check('关闭按钮在视频上方的浮动条', playerOpen.closeInTop === true && playerOpen.closeInBottom === false, JSON.stringify(playerOpen))
+    check('全屏按钮在视频上方的浮动条', playerOpen.fullscreenInTop === true && playerOpen.fullscreenInBottom === false, JSON.stringify(playerOpen))
+    check('「页面全屏」按钮在上方浮动条', playerOpen.pageFullInTop === true)
+
+    const pageFull = await ev(`(async () => {
+      document.getElementById('btnPageFullscreen').click()
+      await new Promise((r) => setTimeout(r, 400))
+      const player = document.getElementById('player')
+      const box = document.getElementById('playerWindow').getBoundingClientRect()
+      return {
+        on: player.classList.contains('is-page-full'),
+        fills: Math.round(box.width) === window.innerWidth && Math.round(box.height) === window.innerHeight,
+        buttonOn: document.getElementById('btnPageFullscreen').classList.contains('is-on'),
+      }
+    })()`)
+    console.log('页面全屏:', JSON.stringify(pageFull))
+    check('点「页面全屏」后铺满整页', pageFull.on === true && pageFull.fills === true, JSON.stringify(pageFull))
+    check('「页面全屏」按钮点亮', pageFull.buttonOn === true)
+
+    const playerClosed = await ev(`(async () => {
+      document.getElementById('btnClose').click()
+      await new Promise((r) => setTimeout(r, 400))
+      const player = document.getElementById('player')
+      const closed = { hidden: player.hidden, pageFull: player.classList.contains('is-page-full') }
+      const card = document.querySelector('.card-video')?.closest('.card')
+      card.click()
+      await new Promise((r) => setTimeout(r, 1200))
+      const box = document.getElementById('playerWindow').getBoundingClientRect()
+      const reopened = {
+        open: player.hidden === false,
+        pageFull: player.classList.contains('is-page-full'),
+        gapX: Math.round(window.innerWidth - box.width),
+      }
+      document.getElementById('btnClose').click()
+      await new Promise((r) => setTimeout(r, 300))
+      return { closed, reopened }
+    })()`)
+    console.log('关闭与重开:', JSON.stringify(playerClosed))
+    check('上方浮动条的关闭能关掉播放器', playerClosed.closed.hidden === true)
+    check('关掉时收回页面全屏', playerClosed.closed.pageFull === false, JSON.stringify(playerClosed.closed))
+    check('再次打开仍是窗口形态', playerClosed.reopened.open === true && playerClosed.reopened.pageFull === false && playerClosed.reopened.gapX > 0, JSON.stringify(playerClosed.reopened))
+  }
+
+  // 图片查看器同一套规矩：先窗口、点「页面全屏」才铺满。目录里可能一张图都没有
+  // （真实媒体库常常只有视频），那就跳过，而不是空手断言「有图片卡片」。
+  await ev(`(() => {
+    for (const [attr, value] of [['data-kind-btn', 'image'], ['data-content-btn', 'all']]) {
+      const node = document.querySelector('[' + attr + '="' + value + '"]')
+      if (node !== null && !node.classList.contains('is-active')) node.click()
+    }
+    return true
+  })()`)
+  await sleep(2500)
+  const viewerState = await ev(`(async () => {
+    const card = document.querySelector('.card-image')?.closest('.card')
+    if (card === undefined || card === null) return { skipped: true }
+    const host = document.getElementById('viewer')
+    const top = document.getElementById('viewerTop')
+    const bottom = document.querySelector('.viewer-bar')
+    card.click()
+    await new Promise((r) => setTimeout(r, 1200))
+    const box = document.getElementById('viewerWindow').getBoundingClientRect()
+    const opened = {
+      open: host.hidden === false,
+      pageFull: host.classList.contains('is-page-full'),
+      gapX: Math.round(window.innerWidth - box.width),
+      gapY: Math.round(window.innerHeight - box.height),
+      closeInTop: top.querySelector('#imageClose') !== null,
+      fullscreenInTop: top.querySelector('#imageFullscreen') !== null,
+      closeInBottom: bottom.querySelector('#imageClose') !== null,
+    }
+    document.getElementById('imageFullscreen').click()
+    await new Promise((r) => setTimeout(r, 400))
+    const fullBox = document.getElementById('viewerWindow').getBoundingClientRect()
+    const full = {
+      on: host.classList.contains('is-page-full'),
+      fills: Math.round(fullBox.width) === window.innerWidth && Math.round(fullBox.height) === window.innerHeight,
+    }
+    document.getElementById('imageClose').click()
+    await new Promise((r) => setTimeout(r, 400))
+    const closed = { hidden: host.hidden, pageFull: host.classList.contains('is-page-full') }
+    return { skipped: false, opened, full, closed }
+  })()`)
+  console.log('查看器窗口:', JSON.stringify(viewerState))
+  if (viewerState.skipped === true) {
+    console.log('  这个目录里没有图片，跳过查看器的窗口断言')
+  } else {
+    check('点图片卡片打开查看器', viewerState.opened.open === true)
+    check('查看器默认是窗口（不是整页）', viewerState.opened.pageFull === false && viewerState.opened.gapX > 0 && viewerState.opened.gapY > 0, JSON.stringify(viewerState.opened))
+    check('关闭按钮在图片上方的浮动条', viewerState.opened.closeInTop === true && viewerState.opened.closeInBottom === false)
+    check('「页面全屏」按钮在上方浮动条', viewerState.opened.fullscreenInTop === true)
+    check('点「页面全屏」后查看器铺满整页', viewerState.full.on === true && viewerState.full.fills === true, JSON.stringify(viewerState.full))
+    check('关掉查看器时收回页面全屏', viewerState.closed.hidden === true && viewerState.closed.pageFull === false, JSON.stringify(viewerState.closed))
+  }
+
+  // ── 13. 平铺网格的分块不许在末尾留半行空白 ─────────────────────────────
+  //
+  // 每个块是**自己**的一个网格，块内张数不整除列数时，块的最后一行就空着半行——
+  // 用户看到的就是「视频后面凭空多出一行」。这里进「库」（会自动升到「全部」，条目
+  // 够多、能分成多块），量两条：除最后一块外，块内张数必须整除列数；未挂载块的
+  // 占位高度也不能和实高差太远（差太多 = 滚动条骗人）。
+  //
+  // 视口临时拉宽到 1920：默认 1280 宽时列数（4）正好整除 120，块边界对没对齐都看
+  // 不出来；1920 宽下是 7 列，120 张会剩 1 张独占一行，正是用户看到的那一幕。
+  await send('Emulation.setDeviceMetricsOverride', { width: 1920, height: 1000, deviceScaleFactor: 1, mobile: false })
+  await sleep(600)
+  await ev(`(() => {
+    // 只看图片 / 只看视频的筛选会把条目数压到一块以内，先都放回「全部」。
+    for (const [attr, value] of [['data-kind-btn', 'all'], ['data-content-btn', 'all']]) {
+      const node = document.querySelector('[' + attr + '="' + value + '"]')
+      if (node !== null && !node.classList.contains('is-active')) node.click()
+    }
+    document.querySelector('.tree-library-name')?.click()
+    return true
+  })()`)
+  await waitFor('document.querySelectorAll(".grid-chunk").length > 1', 30000)
+  const chunkLayout = await ev(`(() => {
+    const chunks = [...document.querySelectorAll('#grid .grid-chunk')]
+    const mounted = chunks.find((chunk) => chunk.classList.contains('is-unmounted') === false)
+    if (mounted === undefined || mounted.children.length === 0) return { skipped: true, chunks: chunks.length }
+    const columns = getComputedStyle(mounted).gridTemplateColumns.split(' ').filter((part) => part !== '').length
+    const counts = chunks.map((chunk) => chunk.children.length)
+    const size = mounted.children.length
+    const gap = 12
+    const cardHeight = Math.round(mounted.firstElementChild.getBoundingClientRect().height)
+    const fullHeight = Math.max(1, Math.ceil(size / columns)) * (cardHeight + gap) - gap
+    // 每个未挂载块自己的张数看不到，但它的占位高度只可能落在「1 张」到「一整块」之间。
+    // 超出这个上界就说明占位算错了（早先会算成整块实高的七八倍，滚动条跟着骗人）。
+    const unmounted = chunks
+      .filter((chunk) => chunk.classList.contains('is-unmounted'))
+      .map((chunk) => ({ height: Math.round(chunk.offsetHeight), unmounted: true }))
+    return {
+      skipped: false,
+      chunks: chunks.length,
+      columns,
+      size,
+      counts,
+      // 只有最后一块允许不满一行（那是列表的结尾）；未挂载的块没有卡片，不算。
+      partial: counts.slice(0, -1).filter((count) => count % columns !== 0),
+      fullHeight,
+      unmounted,
+    }
+  })()`)
+  console.log('分块排布:', JSON.stringify(chunkLayout))
+  if (chunkLayout.skipped === true) {
+    console.log('  页面里只有一个块（内容太少或还在加载），跳过块边界断言')
+  } else {
+    check('除最后一块外，块内张数整除列数', chunkLayout.partial.length === 0, `列数 ${chunkLayout.columns}，块内张数 ${JSON.stringify(chunkLayout.counts)}`)
+    if (chunkLayout.unmounted.length === 0) {
+      console.log('  没有未挂载的块，跳过占位高度断言')
+    } else {
+      const over = chunkLayout.unmounted.filter((item) => item.height > chunkLayout.fullHeight * 1.05)
+      check('未挂载块的占位高度不超过一整块实高', over.length === 0, `一整块约 ${chunkLayout.fullHeight}px，实际 ${JSON.stringify(chunkLayout.unmounted.map((item) => item.height))}`)
+    }
+  }
+  await send('Emulation.clearDeviceMetricsOverride')
+  await sleep(400)
 
   check('控制台没有异常', errors.length === 0, errors.slice(0, 3).join(' | '))
 } catch (error) {

@@ -33,8 +33,10 @@ const keyOf = (root, rel) => `r${root}${rel === '' ? '' : `/${rel.split('/').map
   checkEqual('页面 200', page.status, 200)
   const html = page.buffer.toString('utf8')
   check('页面是 HTML', html.includes('<!doctype html>'))
-  check('页面含列表模式', html.includes('data-mode-btn="browse"'))
-  check('页面含刷视频模式', html.includes('data-mode-btn="feed"'))
+  check('页面含列表模式', html.includes('data-content-btn="all"'))
+  // 独立的刷视频面板已经拿掉：手机上的「刷」由播放器承担（整页打开 + 上下滑）。
+  check('页面不再有独立的刷视频面板', !html.includes('feedScroller') && !html.includes('feedPane'))
+  check('播放器里有顺序 / 随机', html.includes('btnOrder'))
 
   for (const asset of ['app.css', 'app.js', 'player.js']) {
     const file = await request(`/reel/${asset}`)

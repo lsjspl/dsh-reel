@@ -7,6 +7,7 @@
  *
  * 用法：node tests/run.mjs
  */
+import { execFileSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -249,17 +250,21 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
   const mkv = payload.files.find((item) => item.name === 'c 空格 & 符号.mkv')
   check('mkv 的 key 可编码往返', decodeURIComponent(encodeURIComponent(mkv.key)) === mkv.key)
   check('mkv 带 streamUrl', typeof mkv.streamUrl === 'string' && mkv.streamUrl.startsWith('/reel/stream'))
-  // 面包屑契约：任何层的 crumbs 都以根开头、当前目录收尾，根自己就只有一枚。
-  checkEqual('根目录面包屑只有根一枚', payload.crumbs.length, 1)
-  check('根面包屑就是根目录', payload.crumbs[0].key === keyOf('') && payload.crumbs[0].name === payload.root.label, JSON.stringify(payload.crumbs))
+  // 面包屑契约：任何层的 crumbs 都以库开头、倒数第二枚是配置目录根、最后一级是
+  // 当前目录——路径行的顶层和左树的顶层（库 → 配置目录）是同一个东西。
+  checkEqual('根目录面包屑是「库 › 根」两枚', payload.crumbs.length, 2)
+  checkEqual('根目录面包屑从库起步', payload.crumbs[0].key, 'lib')
+  check('根面包屑的第二枚就是根目录', payload.crumbs[1].key === keyOf('') && payload.crumbs[1].name === payload.root.label, JSON.stringify(payload.crumbs))
+  checkEqual('根目录的上一层是库', payload.parent, 'lib')
 }
 
 {
   const nested = await request(`/reel/api/list?k=${encodeURIComponent(keyOf('子目录'))}`)
   const payload = JSON.parse(nested.buffer.toString('utf8'))
   checkEqual('子目录里的文件数', payload.files.length, 1)
-  check('子目录面包屑长度为 2', payload.crumbs.length, 2)
-  check('子目录有上一层', payload.parent !== null)
+  checkEqual('子目录面包屑是「库 › 根 › 子目录」', payload.crumbs.length, 3)
+  checkEqual('子目录面包屑从库起步', payload.crumbs[0].key, 'lib')
+  checkEqual('子目录的上一层是根目录', payload.parent, keyOf(''))
 }
 
 // ── 空 key 等于「第一个根目录」 ────────────────────────────────────────────
@@ -516,15 +521,25 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
   checkEqual('库的键就是 lib', list.payload.key, 'lib')
   checkEqual('库的面包屑只有一枚', list.payload.crumbs.length, 1)
   checkEqual('库的面包屑指向 lib', list.payload.crumbs[0].key, 'lib')
-  check('库列出第一个根的文件夹', list.payload.folders.some((folder) => folder.name === '照片' && folder.key.startsWith('r0/')))
-  check('库列出第二个根的文件夹', list.payload.folders.some((folder) => folder.name === '视频' && folder.key.startsWith('r1/')))
+  checkEqual('库里没有上一级', list.payload.parent, null)
+  // 库的直接子级是**配置的目录根**（和左树同构）：库的「▾」列的就是这些父文件夹，
+  // 而不是把各根的下一层混在一起当成库的子文件夹——那样会凭空跳过一层。
+  const libFolders = list.payload.folders
+  checkEqual('库列出配置的两个根', libFolders.map((folder) => folder.name).join(','), '库 A,库 B')
+  checkEqual('库列出的根键就是 r0 / r1', libFolders.map((folder) => folder.key).join(','), 'r0,r1')
+  check('库列出的根各带直接媒体数', libFolders.every((folder) => folder.mediaCount === 1), JSON.stringify(libFolders))
   const topNames = list.payload.files.map((file) => file.name).sort()
   check('库合并两个根的顶层文件', topNames.join(',') === 'clip.mp4,photo.jpg', topNames.join(','))
   checkEqual('库的文件总数', list.payload.fileCount, 2)
 
-  const videoFolder = list.payload.folders.find((folder) => folder.name === '视频')
+  // 库列出的根就是可以进去的那一层，键直接可用；它的面包屑从库起步。
+  const rootBListing = await callLib('/reel/api/list?k=r1')
+  checkEqual('库里列出的根能直接打开', rootBListing.status, 200)
+  checkEqual('根的面包屑是「库 › 根」', rootBListing.payload.crumbs.map((crumb) => crumb.key).join(','), 'lib,r1')
+  checkEqual('根的上一级是库', rootBListing.payload.parent, 'lib')
+  const videoFolder = rootBListing.payload.folders.find((folder) => folder.name === '视频')
   const inside = await callLib(`/reel/api/list?k=${encodeURIComponent(videoFolder.key)}`)
-  check('库里的文件夹键仍能单独打开', inside.status === 200 && inside.payload.files.some((file) => file.name === 'deep.mp4'))
+  check('根下面的子目录键仍能单独打开', inside.status === 200 && inside.payload.files.some((file) => file.name === 'deep.mp4'))
 
   const scan = await callLib('/reel/api/scan?k=lib&kinds=image,video&limit=100&depth=8')
   checkEqual('库扫描 200', scan.status, 200)
@@ -542,6 +557,131 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
   libHarness.dispose()
 }
 
+// ── 全屏壁纸：设置里那一项怎么解析 ───────────────────────────────────────
+//
+// 设置里填的壁纸可以是媒体 key，也可以是配置目录内的绝对路径；两种都要解析成
+// 「和卡片同款」的那条条目（streamUrl / thumbUrl / kind），页面才能直接画出来。
+// 目录外的路径、不存在的文件一律当作没配——一个笔误不该让浏览页出问题。
+
+{
+  const wallRoot = join(workspace, '壁纸根')
+  mkdirSync(wallRoot, { recursive: true })
+  writeFileSync(join(wallRoot, 'wall.jpg'), bytes(900))
+  writeFileSync(join(wallRoot, 'wall.mp4'), bytes(1200))
+
+  const serveWithWallpaper = async (value) => {
+    const harness = fakeContext()
+    apply(harness.ctx, Config['~standard'].validate({ roots: [wallRoot], wallpaper: value }).value)
+    const server = createServer(dispatch(harness.routes))
+    await new Promise((settle) => server.listen(0, '127.0.0.1', settle))
+    const origin = `http://127.0.0.1:${server.address().port}`
+    const session = JSON.parse(await (await fetch(`${origin}/reel/api/session`)).text())
+    server.close()
+    harness.dispose()
+    return session.wallpaper
+  }
+
+  const byKey = await serveWithWallpaper('r0/wall.jpg')
+  checkEqual('按 key 配的壁纸解析出条目', byKey?.key, 'r0/wall.jpg')
+  checkEqual('壁纸报告种类', byKey?.kind, 'image')
+
+  // 视频壁纸要有可播的地址（图片没有 streamUrl，客户端按 key 拼 /reel/stream，
+  // 和卡片走的是同一条路）。这条就是「配一段视频当壁纸」能不能成立的关键。
+  const videoWall = await serveWithWallpaper('r0/wall.mp4')
+  checkEqual('视频壁纸解析出条目', videoWall?.key, 'r0/wall.mp4')
+  check('视频壁纸带可直接用的流地址', String(videoWall?.streamUrl).startsWith('/reel/stream'), String(videoWall?.streamUrl))
+
+  const byPath = await serveWithWallpaper(join(wallRoot, 'wall.jpg'))
+  checkEqual('按绝对路径配的壁纸解析成同一个 key', byPath?.key, 'r0/wall.jpg')
+
+  checkEqual('没配壁纸时是 null', await serveWithWallpaper(''), null)
+  checkEqual('指向不存在的文件时是 null', await serveWithWallpaper('r0/nope.jpg'), null)
+  checkEqual('目录外的绝对路径是 null', await serveWithWallpaper(join(workspace, 'outside.jpg')), null)
+}
+
+// ── 转码：把浏览器不认的容器变成 MP4 ──────────────────────────────────────
+//
+// AVI/WMV 这类容器浏览器解不了，插件用同一个 ffmpeg 转成 H.264/AAC 的 MP4
+// 并缓存，之后走的就是普通 MP4 的播放路径。没有 ffmpeg 时必须给出可读的
+// 503，而不是崩掉。正向链路要真 ffmpeg：用 REEL_FFMPEG=<路径> 打开。
+
+{
+  const ffmpegBinary = process.env.REEL_FFMPEG ?? ''
+  const sourceRoot = join(workspace, '转码源')
+  mkdirSync(sourceRoot, { recursive: true })
+  // 假数据：ffmpeg 解不开，用来验证失败路径不会变成 500。
+  writeFileSync(join(sourceRoot, 'broken.avi'), bytes(1200))
+  writeFileSync(join(sourceRoot, 'note.txt'), 'not media\n')
+  let ffmpegUsable = ffmpegBinary !== ''
+  if (ffmpegUsable) {
+    try {
+      // 4 秒的 MPEG-4 ASP AVI：浏览器不认这个容器，转码是唯一出路；留足长度，
+      // 好让「从中间开始」（&t=）也真的有内容可转。
+      execFileSync(ffmpegBinary, [
+        '-hide_banner', '-loglevel', 'error',
+        '-f', 'lavfi', '-i', 'testsrc=duration=4:size=160x120:rate=10',
+        '-c:v', 'mpeg4',
+        '-y', join(sourceRoot, 'clip.avi'),
+      ], { stdio: 'ignore', windowsHide: true })
+    } catch (error) {
+      console.log(`（REEL_FFMPEG 无法运行，跳过正向转码链路：${String(error.message).split('\n')[0]}）`)
+      ffmpegUsable = false
+    }
+  }
+
+  const transcodeHarness = fakeContext()
+  apply(transcodeHarness.ctx, Config['~standard'].validate({
+    roots: [sourceRoot],
+    ...(ffmpegUsable ? { ffmpegPath: ffmpegBinary } : {}),
+    requireTrustedRequest: true,
+  }).value)
+  const transcodeServer = createServer(dispatch(transcodeHarness.routes))
+  await new Promise((settle) => transcodeServer.listen(0, '127.0.0.1', settle))
+  const transcodeOrigin = `http://127.0.0.1:${transcodeServer.address().port}`
+  const callTranscode = async (path, options) => {
+    const response = await fetch(`${transcodeOrigin}${path}`, options)
+    const buffer = Buffer.from(await response.arrayBuffer())
+    return { status: response.status, headers: response.headers, buffer }
+  }
+
+  const session = JSON.parse((await callTranscode('/reel/api/session')).buffer.toString('utf8'))
+  check('session 报告转码能力', typeof session.capabilities.transcode === 'boolean')
+
+  const unknown = await callTranscode('/reel/transcode?k=r9/x.avi')
+  checkEqual('未知目录的转码请求 404', unknown.status, 404)
+  const notMedia = await callTranscode(`/reel/transcode?k=${encodeURIComponent('r0/note.txt')}`)
+  checkEqual('非音视频的转码请求 415', notMedia.status, 415)
+
+  const broken = await callTranscode(`/reel/transcode?k=${encodeURIComponent('r0/broken.avi')}`)
+  if (session.capabilities.transcode !== true) {
+    checkEqual('没有 ffmpeg 时转码 503', broken.status, 503)
+  } else {
+    check('解不开的文件不会 500', broken.status === 503, `实际 ${broken.status}：${broken.buffer.toString('utf8').slice(0, 120)}`)
+  }
+
+  if (session.capabilities.transcode === true && ffmpegUsable) {
+    const stream = await callTranscode(`/reel/transcode?k=${encodeURIComponent('r0/clip.avi')}`)
+    check('AVI 边转边播 200', stream.status === 200, `实际 ${stream.status}：${stream.buffer.toString('utf8').slice(0, 160)}`)
+    if (stream.status === 200) {
+      checkEqual('转码流是 MP4', stream.headers.get('content-type'), 'video/mp4')
+      check('首部是合法 MP4（ftyp）', stream.buffer.subarray(4, 8).toString('latin1') === 'ftyp', stream.buffer.subarray(0, 12).toString('latin1'))
+      // 分片 MP4：浏览器收到第一片就能开始解码，这是「边转边播」的前提。
+      check('是分片 MP4（带 moof）', stream.buffer.includes(Buffer.from('moof')))
+      checkEqual('边转边发的流没有固定长度', stream.headers.get('content-length'), null)
+      // 拖动进度条走的就是这条路：从 t 秒重新开一条流。
+      const later = await callTranscode(`/reel/transcode?k=${encodeURIComponent('r0/clip.avi')}&t=1`)
+      check('从中间开始也能出流（&t=）', later.status === 200 && later.buffer.length > 0, `实际 ${later.status}`)
+      check('&t= 拿到的不是同一段内容', later.status === 200 && !later.buffer.equals(stream.buffer))
+    }
+    const listing = JSON.parse((await callTranscode('/reel/api/list?k=r0')).buffer.toString('utf8'))
+    const clip = listing.files.find((item) => item.name === 'clip.avi')
+    check('视频条目带 transcodeUrl', /\/reel\/transcode\?k=/.test(clip?.transcodeUrl ?? ''), JSON.stringify(clip))
+  }
+
+  transcodeServer.close()
+  transcodeHarness.dispose()
+}
+
 // ── 方法限制 ───────────────────────────────────────────────────────────────
 
 {
@@ -555,7 +695,7 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
 // ── 生命周期 ───────────────────────────────────────────────────────────────
 
 {
-  checkEqual('注册了 11 条精确路由', harness.routes.exact.size, 11)
+  checkEqual('注册了 12 条精确路由', harness.routes.exact.size, 12)
   check('注册了资源前缀路由', harness.routes.prefix.has('/reel'))
   const before = harness.routes.exact.size
   harness.dispose()

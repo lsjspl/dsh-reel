@@ -27,6 +27,15 @@
   --shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
   --topbar-h: 56px;
   --sidebar-w: 320px;
+  /* 网格瓦片宽度 = 按档位取下面三条表达式之一（JS 写进 --tile）。
+     基准按断点给（桌面 200、窄屏 132、小屏 112），所以「中」在每种设备上都是
+     「刚好」那一档；「大」另有 --tile-wide：桌面约 3 列，窄屏那边带一条相对
+     屏宽的下限，于是手机上一屏只有一张。 */
+  --tile-base: 200px;
+  --tile-wide: calc(var(--tile-base) * 1.4);
+  --tile: var(--tile-base);
+  /* 播放器 / 查看器窗口离视口边缘的留白：留白本身就是「这是窗口，不是整页」的信号。 */
+  --window-gap: clamp(10px, 3vh, 30px) clamp(10px, 3vw, 44px);
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
 }
@@ -65,10 +74,78 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-body[data-mode="feed"] .browse { display: none; }
-body[data-mode="browse"] .feed { display: none; }
-
 button { font: inherit; color: inherit; }
+
+/* ── 全屏壁纸 ───────────────────────────────────────────────────────────
+ *
+ * 壁纸层压在最底下：`position: fixed` + z-index 0，界面各层要么是 positioned
+ * （topbar / sidebar / content / 各种弹窗）要么在它们里面，所以都盖在它上面；
+ * 它自己 pointer-events: none，一个点击都不吃。
+ */
+
+.wallpaper {
+  position: fixed; inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background: #000;
+}
+
+.wallpaper[hidden] { display: none; }
+
+.wallpaper img,
+.wallpaper video {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* 压暗 + 轻微模糊：壁纸是背景，网格和文字得读得清。太暗就等于没设壁纸，
+   所以只压到「能看清字」的程度，画面本身要还认得出。 */
+.wallpaper::after {
+  content: '';
+  position: absolute; inset: 0;
+  background: linear-gradient(rgba(6, 8, 14, 0.24), rgba(6, 8, 14, 0.46));
+  backdrop-filter: blur(2px);
+}
+
+/* 设了壁纸时界面转「玻璃」：底色换半透明 + 面板加模糊。没设壁纸时这几条一条
+   都不生效，原来的观感完全不动。 */
+body[data-wallpaper="1"] {
+  --bg: rgba(8, 10, 16, 0.42);
+  --bg-elev: rgba(13, 16, 23, 0.52);
+  --bg-sunken: rgba(5, 7, 11, 0.38);
+  --bg-hover: rgba(32, 38, 52, 0.6);
+  --bg-active: rgba(40, 47, 64, 0.66);
+  --line: rgba(126, 140, 172, 0.22);
+  --line-soft: rgba(126, 140, 172, 0.14);
+}
+
+body[data-wallpaper="1"] .topbar,
+body[data-wallpaper="1"] .sidebar,
+body[data-wallpaper="1"] .card,
+body[data-wallpaper="1"] .folder-group,
+body[data-wallpaper="1"] .toolbar-sticky,
+body[data-wallpaper="1"] .crumb-menu,
+body[data-wallpaper="1"] .player-window,
+body[data-wallpaper="1"] .viewer-window {
+  backdrop-filter: blur(16px);
+}
+
+/* 浅色主题下玻璃要往白里调，否则深色半透明面板配深色文字会读不清。 */
+@media (prefers-color-scheme: light) {
+  body[data-wallpaper="1"] {
+    --bg: rgba(246, 247, 251, 0.62);
+    --bg-elev: rgba(255, 255, 255, 0.68);
+    --bg-sunken: rgba(236, 238, 245, 0.6);
+    --bg-hover: rgba(238, 241, 248, 0.78);
+    --line: rgba(60, 74, 102, 0.2);
+    --line-soft: rgba(60, 74, 102, 0.12);
+  }
+  .wallpaper::after {
+    background: linear-gradient(rgba(246, 247, 251, 0.42), rgba(246, 247, 251, 0.6));
+  }
+}
 
 svg { width: 18px; height: 18px; fill: currentColor; }
 
@@ -88,13 +165,58 @@ svg { width: 18px; height: 18px; fill: currentColor; }
 
 .brand { display: flex; align-items: center; gap: 8px; flex: none; }
 
+/* 品牌：自己的彩色播放标（蓝紫圆角块 + 白三角，和 favicon 同一个图形）+
+   「DSH [REEL]」。不用 DeepSeek 那只鲸鱼——那是别人的标。 */
 .brand-mark {
-  width: 22px; height: 22px; border-radius: 7px;
-  background: linear-gradient(140deg, var(--accent), #8b5bff);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset;
+  width: 22px; height: 22px;
+  display: inline-flex;
 }
 
-.brand-text { font-weight: 600; letter-spacing: 0.02em; }
+.brand-mark svg { width: 100%; height: 100%; }
+.brand-mark img { width: 100%; height: 100%; display: block; }
+
+/* 目录 / 库那一行的小图标（内联 SVG）：盒子用 flex 居中，别靠 vertical-align
+   微调——树行本身是 flex，行内元素会坐在文字基线上，看着就是「图标浮高了、
+   跟文字没对齐」。尺寸比正文小一号（正文 13px → 图标 12px），实心图形才不会
+   比字还抢眼。 */
+.crumb-ico,
+.ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 15px;
+  height: 15px;
+}
+
+.crumb-ico svg,
+.ico svg { width: 12px; height: 12px; fill: currentColor; vertical-align: 0; }
+
+/* 图标要**往下**挪 1px。行盒中心不是眼睛看到的中心：`ss`/`ss-old` 这种小写字母
+   的墨迹（x-height）整体偏下，而图标是按行盒居中的，看着就是「图标浮在上头、
+   文字掉在下头」。+1px 是常见的 cap-height 修正量，正好把两者视觉对齐。 */
+.ico,
+.crumb-ico { transform: translateY(1px); }
+
+.brand-text { display: flex; align-items: center; gap: 7px; font-weight: 600; letter-spacing: 0.01em; }
+.brand-name { font-size: 14.5px; }
+
+/* 跟着 dsh 那枚「HARNESS」徽标：反白圆角小牌、深色字、大写加字距。
+   颜色写死而不是用 --bg——设了壁纸时 --bg 是半透明的，字会跟着透掉。 */
+.brand-badge {
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.1em;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: var(--fg);
+  color: #0b0d12;
+}
+
+@media (prefers-color-scheme: light) {
+  .brand-badge { color: #f6f7fb; }
+}
 
 .modes {
   display: flex;
@@ -150,7 +272,27 @@ svg { width: 18px; height: 18px; fill: currentColor; }
   pointer-events: none;
 }
 
-.topbar-actions { display: flex; gap: 4px; margin-left: auto; flex: none; }
+.topbar-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; flex: none; }
+
+/* 一键看视频：和刷新图标同一条线上的小药丸。 */
+.watch-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  height: 34px;
+  padding: 0 13px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg-elev);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.15s var(--ease), background 0.15s var(--ease);
+}
+
+.watch-btn:hover { border-color: var(--accent); background: var(--bg-hover); }
 
 .icon-btn {
   width: 34px; height: 34px;
@@ -293,7 +435,8 @@ body.sidebar-collapsed .sidebar-resizer { display: none; }
   cursor: pointer;
   color: var(--fg);
   font-weight: 600;
-  font-size: 13px;
+  /* 和文件夹行同号：13px → 14px。 */
+  font-size: 14px;
   white-space: nowrap;
   overflow: hidden;
 }
@@ -305,7 +448,9 @@ body.sidebar-collapsed .sidebar-resizer { display: none; }
 }
 
 /* 三角的位置固定住：库那行没有三角，也得和其它根对齐。 */
-.tree-root-name .twisty, .tree-library-name .twisty { flex: none; width: 12px; color: var(--fg-faint); font-size: 10px; }
+/* 展开三角：和 14px 的目录名比，10px 太小、点起来也费劲——放大到 13px，
+   盒子同步加宽到 14px，免得 ▾/▸ 被裁掉。组头那条规则跟着一起放大，保持一致。 */
+.tree-root-name .twisty, .tree-library-name .twisty { flex: none; width: 14px; color: var(--fg-faint); font-size: 13px; }
 
 .tree-root-name:hover, .tree-library-name:hover { background: var(--bg-hover); }
 .tree-root-name.is-active, .tree-library-name.is-active { background: var(--accent-soft); color: var(--accent-strong); }
@@ -316,7 +461,8 @@ body.sidebar-collapsed .sidebar-resizer { display: none; }
   border-radius: 6px;
   cursor: pointer;
   color: var(--fg-dim);
-  font-size: 13px;
+  /* 14px：13px 在一屏几十行目录名里读着太小（用户反馈「字太小」）。 */
+  font-size: 14px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -324,7 +470,7 @@ body.sidebar-collapsed .sidebar-resizer { display: none; }
 
 .tree-folder:hover { background: var(--bg-hover); color: var(--fg); }
 .tree-folder.is-active { background: var(--accent-soft); color: var(--accent-strong); }
-.tree-folder .twisty { width: 12px; flex: none; color: var(--fg-faint); font-size: 10px; }
+.tree-folder .twisty { width: 14px; flex: none; color: var(--fg-faint); font-size: 13px; }
 .tree-folder .label { overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1 1 auto; }
 
 /* 「进入这个文件夹」的明确入口：平时淡着，指针到这一行才亮。 */
@@ -598,6 +744,9 @@ body.sidebar-collapsed .sidebar-resizer { display: none; }
 .modes-sm { padding: 2px; }
 .modes-sm .mode-btn { padding: 4px 11px; font-size: 12.5px; }
 
+/* 网格大小那组只在网格视图里出现：列表视图下瓦片宽度不起作用，留着只是占位。 */
+body[data-view="list"] #tileGroup { display: none; }
+
 .summary {
   display: flex; align-items: center; gap: 12px;
   color: var(--fg-faint); font-size: 12px; margin-bottom: 12px;
@@ -641,6 +790,9 @@ body[data-view="list"] .grid { display: block; }
   overflow: hidden;
   cursor: pointer;
   transition: transform 0.18s var(--ease), border-color 0.18s var(--ease), box-shadow 0.18s var(--ease);
+  /* 卡片自己是容器：窄瓦片下的取舍写在 @container 里（见 .card-meta 那段），
+     这样和「用户选了哪一档 / 屏幕多宽」都解耦——只看这张卡有多宽。 */
+  container-type: inline-size;
 }
 
 .card:hover { transform: translateY(-2px); border-color: var(--accent); box-shadow: var(--shadow); }
@@ -783,7 +935,7 @@ body[data-view="list"] .grid { display: block; }
 .group-head:hover { background: var(--bg-hover); }
 .group-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
-.group-head .twisty { flex: none; width: 12px; color: var(--fg-faint); font-size: 10px; }
+.group-head .twisty { flex: none; width: 14px; color: var(--fg-faint); font-size: 13px; }
 .group-head .ico { flex: none; font-size: 14px; }
 
 .group-name {
@@ -834,6 +986,7 @@ body[data-view="list"] .grid { display: block; }
 .group-grid .card-meta { font-size: 10.5px; }
 .group-grid .kind-badge,
 .group-grid .duration-badge { font-size: 10px; padding: 1px 5px; }
+.group-grid .format-chip { font-size: 9px; padding: 0 3px; }
 .card.is-compact .card-media { aspect-ratio: 16 / 10; }
 
 /* 卡片上的来源路径：分组视图里点它跳到那一层。 */
@@ -869,7 +1022,36 @@ body[data-view="list"] .grid { display: block; }
   margin-bottom: 2px;
 }
 
-.card-meta { font-size: 11.5px; color: var(--fg-faint); display: flex; gap: 8px; }
+.card-meta { font-size: 11.5px; color: var(--fg-faint); display: flex; align-items: center; gap: 8px; }
+
+/* 瓦片很窄时（手机上选「小图」= 一屏四列，一张卡只有 80 多像素）信息行放不下：
+   尺寸那行折成两行会把整行卡片撑得高低不齐，格式标签更是直接被切掉。让卡片
+   自己做容器查询：窄到放不下就先让格式标签走，尺寸行改成一行省略号。 */
+@container (max-width: 118px) {
+  .card-info { padding: 5px 7px 7px; }
+  .card-name { font-size: 11.5px; }
+  .card-meta { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card-meta .format-chip { display: none; }
+  /* 更要紧的一条：原来那圈 48px 的播放按钮在 80 多像素的封面上占掉一大半，
+     整张卡看着就是「一个大的播放按钮」。缩到 34px，两枚角标也跟着收。 */
+  .play-overlay .ring { width: 34px; height: 34px; }
+  .play-overlay .ring svg { width: 16px; height: 16px; }
+  .card-media .kind-badge { font-size: 9.5px; padding: 1px 5px; gap: 2px; border-radius: 5px; }
+  .card-media .duration-badge { font-size: 8.5px; padding: 1px 4px; border-radius: 4px; }
+}
+
+/* 容器格式小标签：跟在信息行的时间后面，一眼分出 mp4 / avi / mkv。 */
+.format-chip {
+  flex: none;
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-size: 9.5px;
+  line-height: 1.6;
+  letter-spacing: 0.04em;
+  color: var(--fg-dim);
+  text-transform: uppercase;
+}
 
 .card-progress {
   position: absolute; left: 0; right: 0; bottom: 0;
@@ -925,179 +1107,49 @@ body[data-view="list"] .card-progress { display: none; }
 .primary-btn:hover { filter: brightness(1.08); }
 .primary-btn:disabled { opacity: 0.5; cursor: default; filter: none; }
 
-/* ── 刷视频 ───────────────────────────────────────────────────────────── */
-
-.feed { position: relative; height: calc(100% - var(--topbar-h)); background: #000; }
-
-.feed-scroller {
-  height: 100%;
-  overflow-y: scroll;
-  scroll-snap-type: y mandatory;
-  scroll-behavior: smooth;
-  overscroll-behavior-y: contain;
-  outline: none;
-  scrollbar-width: none;
-}
-
-.feed-scroller::-webkit-scrollbar { display: none; }
-
-.slide {
-  position: relative;
-  height: 100%;
-  scroll-snap-align: start;
-  scroll-snap-stop: always;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-  background: #05060a;
-}
-
-.slide-stage { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
-
-.slide-stage video,
-.slide-stage img {
-  max-width: 100%;
-  max-height: 100%;
-  width: auto;
-  height: auto;
-  display: block;
-}
-
-.slide-stage video.stretch { width: 100%; height: 100%; object-fit: contain; }
-.slide-stage img.contain { object-fit: contain; width: 100%; height: 100%; }
-
-.slide-overlay {
-  position: absolute; inset: auto 0 0 0;
-  padding: 20px 20px calc(20px + env(safe-area-inset-bottom));
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0));
-  pointer-events: none;
-}
-
-.slide-overlay > * { pointer-events: auto; }
-
-.slide-meta { min-width: 0; color: #fff; max-width: min(72vw, 720px); }
-
-.slide-title {
-  font-size: 15px;
-  font-weight: 600;
-  margin: 0 0 4px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.7);
-}
-
-.slide-sub { font-size: 12.5px; color: rgba(255, 255, 255, 0.72); display: flex; gap: 10px; flex-wrap: wrap; }
-
-.slide-rail { display: flex; flex-direction: column; gap: 10px; align-items: center; }
-
-.rail-btn {
-  width: 44px; height: 44px;
-  border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  background: rgba(20, 22, 30, 0.55);
-  color: #fff;
-  display: inline-flex; align-items: center; justify-content: center;
-  cursor: pointer;
-  backdrop-filter: blur(8px);
-  transition: transform 0.15s var(--ease), background 0.15s var(--ease);
-  font-size: 15px;
-}
-
-.rail-btn:hover { background: rgba(40, 44, 58, 0.75); transform: scale(1.06); }
-.rail-btn.is-on { background: var(--accent); border-color: var(--accent); }
-
-.slide-progress {
-  position: absolute; left: 0; right: 0; bottom: 0;
-  height: 2.5px;
-  background: rgba(255, 255, 255, 0.16);
-}
-
-.slide-progress i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.15s linear; }
-
-.slide-tap {
-  position: absolute; inset: 0;
-  display: flex;
-  z-index: 1;
-}
-
-.slide-tap button {
-  flex: 1;
-  border: 0;
-  background: transparent;
-  cursor: pointer;
-  color: transparent;
-}
-
-.slide-center {
-  position: absolute; inset: 0;
-  display: flex; align-items: center; justify-content: center;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.25s var(--ease);
-}
-
-.slide-center.show { opacity: 1; }
-
-.slide-center .bubble {
-  width: 74px; height: 74px; border-radius: 50%;
-  background: rgba(0, 0, 0, 0.55);
-  backdrop-filter: blur(6px);
-  display: flex; align-items: center; justify-content: center;
-  color: #fff;
-}
-
-.slide-center .bubble svg { width: 34px; height: 34px; fill: #fff; }
-
-.feed-hud {
-  position: absolute; top: 12px; left: 14px; right: 14px;
-  display: flex; justify-content: space-between; align-items: center;
-  pointer-events: none;
-  z-index: 5;
-}
-
-.feed-hud > * { pointer-events: auto; display: flex; align-items: center; gap: 8px; }
-
-.chip {
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  background: rgba(16, 18, 26, 0.6);
-  color: #fff;
-  border-radius: 999px;
-  padding: 5px 12px;
-  font-size: 12.5px;
-  cursor: pointer;
-  backdrop-filter: blur(8px);
-  max-width: 46vw;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.chip:hover { border-color: rgba(255, 255, 255, 0.45); }
-.chip-quiet { cursor: default; color: rgba(255, 255, 255, 0.72); }
-.feed-hud .icon-btn.ghost { color: #fff; }
-.feed-hud .icon-btn.ghost:hover { background: rgba(255, 255, 255, 0.14); }
-
-.feed-empty {
-  position: absolute; inset: 0;
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 14px; color: rgba(255, 255, 255, 0.8);
-}
-.feed-empty .ghost-btn { width: auto; padding: 0 18px; }
-
-/* ── 图片查看器 ───────────────────────────────────────────────────────── */
+/* ── 图片查看器 ─────────────────────────────────────────────────────────
+ *
+ * 查看器是一个「窗口」：默认四周留白、圆角、带阴影，`.is-page-full`（页面全屏
+ * 按钮）才铺满整页。裁剪交给窗口，浮动的翻页箭头因此落在窗口边缘内。
+ */
 
 .viewer {
   position: fixed; inset: 0; z-index: 60;
-  background: rgba(4, 5, 9, 0.94);
-  backdrop-filter: blur(6px);
-  display: flex; flex-direction: column;
+  background: rgba(4, 5, 9, 0.8);
+  backdrop-filter: blur(8px);
+  display: flex; align-items: center; justify-content: center;
+  padding: var(--window-gap);
   animation: fade 0.16s var(--ease);
+}
+
+.viewer-window {
+  position: relative;
+  width: 100%; height: 100%;
+  max-width: 1440px;
+  display: flex; flex-direction: column;
+  background: rgba(6, 8, 12, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.62);
+}
+
+.viewer.is-page-full { padding: 0; background: rgba(4, 5, 9, 0.96); backdrop-filter: none; }
+
+.viewer.is-page-full .viewer-window {
+  max-width: none;
+  border-radius: 0;
+  border-color: transparent;
+  box-shadow: none;
+  background: transparent;
+}
+
+/* 关闭与全屏只在顶部这条浮动条上。 */
+.viewer-top {
+  display: flex; align-items: center; justify-content: flex-end; gap: 4px;
+  padding: calc(8px + env(safe-area-inset-top)) 10px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  color: #fff;
 }
 
 .viewer-stage {
@@ -1130,8 +1182,10 @@ body[data-view="list"] .card-progress { display: none; }
 
 .viewer-meta { font-size: 12.5px; color: rgba(255, 255, 255, 0.75); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .viewer-actions { display: flex; gap: 4px; }
-.viewer-bar .icon-btn { color: #fff; }
-.viewer-bar .icon-btn:hover { background: rgba(255, 255, 255, 0.14); }
+.viewer-bar .icon-btn, .viewer-top .icon-btn { color: #fff; }
+.viewer-bar .icon-btn:hover, .viewer-top .icon-btn:hover { background: rgba(255, 255, 255, 0.14); }
+/* 「页面全屏」开着时按钮保持点亮，用户能看出再点一下就回窗口。 */
+.viewer-top .icon-btn.is-on { color: var(--accent-strong); background: rgba(255, 255, 255, 0.14); }
 
 .viewer-nav {
   position: absolute; top: 50%; transform: translateY(-50%);
@@ -1147,21 +1201,84 @@ body[data-view="list"] .card-progress { display: none; }
 .viewer-nav.prev { left: 14px; }
 .viewer-nav.next { right: 14px; }
 
-/* ── 播放器 ───────────────────────────────────────────────────────────── */
+/* ── 播放器 ─────────────────────────────────────────────────────────────
+ *
+ * 和查看器同一套结构：`.player` 只是遮罩，`.player-window` 才是那块视频窗口。
+ * 默认不铺满（点开就先给窗口形态），两种铺满各有出口——`is-page-full` 是
+ * 「页面全屏」按钮，`:fullscreen` 是浏览器全屏（F）。
+ */
 
 .player {
   position: fixed; inset: 0; z-index: 70;
-  background: #000;
+  background: rgba(4, 5, 9, 0.82);
+  backdrop-filter: blur(10px);
   display: flex; align-items: center; justify-content: center;
+  padding: var(--window-gap);
   animation: fade 0.16s var(--ease);
 }
 
+.player-window {
+  position: relative;
+  width: 100%; height: 100%;
+  max-width: 1440px;
+  background: #000;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.62);
+}
+
+.player.is-page-full { padding: 0; background: #000; backdrop-filter: none; }
+.player:fullscreen { padding: 0; background: #000; backdrop-filter: none; }
+
+.player.is-page-full .player-window,
+.player:fullscreen .player-window {
+  max-width: none;
+  border-radius: 0;
+  border-color: transparent;
+  box-shadow: none;
+}
+
 .player video {
+  display: block;
   width: 100%;
   height: 100%;
   max-height: 100%;
   object-fit: contain;
   background: #000;
+  /* 上下滑时整块画面被手指带走（transform 由 player.js 写内联样式）。 */
+  will-change: transform;
+}
+
+/* 「滑过去」露出来的下一页：邻居的封面。它平时停在屏幕外（transform 由
+   player.js 摆），手指往上推时从下面顶进来，松手滑完正好落在 0 位——所以换条
+   那一刻看不到任何跳变。用 cover 铺满整页：拖动时露出的那条立刻有画面，
+   而不是一片黑（视频本身的 letterbox 黑边属于当前页，会跟着手指一起走）。 */
+.player-peek {
+  position: absolute;
+  inset: 0;
+  background: #000 center / cover no-repeat;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.player-peek[hidden] { display: none; }
+
+.player-peek .peek-name {
+  color: #fff;
+  font-size: 13px;
+  line-height: 1.5;
+  max-width: min(80%, 520px);
+  padding: 6px 12px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(6px);
+  text-align: center;
+  word-break: break-all;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
 }
 
 .player video::cue {
@@ -1230,6 +1347,22 @@ body[data-view="list"] .card-progress { display: none; }
   animation: fade 0.2s var(--ease);
 }
 
+/* 视频上方的浮动条：关闭与全屏相关的东西都在这儿，视频下方不再重复。
+   它和控件条一起淡出，所以播放时画面干净，动一下鼠标就回来。 */
+.player-top {
+  position: absolute; left: 0; right: 0; top: 0;
+  z-index: 2;
+  display: flex; align-items: center; justify-content: flex-end; gap: 4px;
+  padding: calc(10px + env(safe-area-inset-top)) 12px 26px;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.72) 8%, rgba(0, 0, 0, 0));
+  color: #fff;
+  transition: opacity 0.24s var(--ease), transform 0.24s var(--ease);
+}
+
+.player-top .icon-btn { color: #fff; }
+.player-top .icon-btn:hover { background: rgba(255, 255, 255, 0.16); }
+.player-top .icon-btn.is-on { color: var(--accent-strong); background: rgba(255, 255, 255, 0.14); }
+
 .player-chrome {
   position: absolute; left: 0; right: 0; bottom: 0;
   padding: 44px 18px calc(14px + env(safe-area-inset-bottom));
@@ -1239,6 +1372,7 @@ body[data-view="list"] .card-progress { display: none; }
 }
 
 .player.chrome-hidden .player-chrome { opacity: 0; transform: translateY(12px); pointer-events: none; }
+.player.chrome-hidden .player-top { opacity: 0; transform: translateY(-10px); pointer-events: none; }
 .player.chrome-hidden { cursor: none; }
 
 .player-title {
@@ -1454,32 +1588,44 @@ body[data-view="list"] .card-progress { display: none; }
 
 .viewer-stage { touch-action: none; }
 .progress { touch-action: none; }
-.slide { touch-action: pan-y; }
+/* 播放器里上下滑是「换下一条」：这条手势必须自己接，所以整块画面面板声明
+   touch-action: none——写成 pan-y 的话浏览器会把纵向拖动当成滚动吃掉，甩一个
+   pointercancel 过来，手势还没结束就没了。拖动进度条 / 音量条是自己处理指针的，
+   不受影响（进度条本来就声明了 none）。 */
+.player-window { touch-action: none; }
 button, .card, .crumb, .crumb-name, .crumb-chevron, .crumb-fold, .tree-folder, .tree-root-name, .tree-library-name {
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
 }
-.slide-title, .card-name, .player-name { user-select: none; -webkit-user-select: none; }
+.card-name, .player-name { user-select: none; -webkit-user-select: none; }
 .player { -webkit-touch-callout: none; }
 
 /* 细指针（鼠标）才显示的方向键提示，触摸端靠手势。 */
-.feed-hud .chip { -webkit-user-select: none; user-select: none; }
-
 @media (hover: none) {
-  /* 悬停无效的设备上不要靠 hover 才出现的东西。 */
-  .card .play-overlay { opacity: 1; }
+  /* 触摸端**不挂那圈播放按钮**。原来这里是「没有 hover 就常显」，于是每一张
+     封面上都压着一个 48px 的播放圈，一屏十几张卡看着全是按钮——可左上角已经
+     有「▶ 视频」角标说明它是视频，手指点上去就是播放，圈是纯噪音。
+     鼠标端照旧：悬停才出现（`.card:hover .play-overlay`）。 */
+  .card .play-overlay { display: none; }
   .volume input { width: 84px; opacity: 1; }
   .progress-track { height: 8px; }
   .progress-thumb { transform: translateY(-50%) scale(1); }
 }
 
 @media (max-width: 720px) {
-  :root { --sidebar-w: 0px; --topbar-h: 52px; }
+  /* 手机上「窗口」的留白收窄：还看得出是窗口，但视频几乎占满。 */
+  :root {
+    --sidebar-w: 0px; --topbar-h: 52px; --window-gap: 6px;
+    --tile-base: 132px;
+    /* 「大」在一屏一张：手机基准小，光乘倍率永远是两列，所以给一条相对屏宽的
+       下限——一张卡占掉七八成屏宽，自然只放得下一列。 */
+    --tile-wide: max(calc(var(--tile-base) * 1.4), 74vw);
+  }
   .sidebar, .sidebar-resizer, .sidebar-rail { display: none; }
   .brand-text { display: none; }
   .search { max-width: none; }
   .search-hint { display: none; }
-  .grid { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 8px; }
+  .grid { grid-template-columns: repeat(auto-fill, minmax(var(--tile, 200px), 1fr)); gap: 8px; }
   .content { padding: 10px 10px calc(72px + env(safe-area-inset-bottom)); }
   .topbar { gap: 8px; padding: 0 8px; }
   .mode-btn { padding: 6px 10px; font-size: 12.5px; }
@@ -1487,27 +1633,31 @@ button, .card, .crumb, .crumb-name, .crumb-chevron, .crumb-fold, .tree-folder, .
   .card-name { font-size: 12px; }
   .card-meta { font-size: 11px; }
   .toolbar { gap: 8px; }
-  .toolbar-side { width: 100%; margin-left: 0; }
+  /* 工具条右侧那排按钮（内容 / 图片视频 / 视图 / 排序）在手机上放不下。
+     它原来是 `flex: none` + `nowrap`：盒子给了 100%，里面的按钮却按一行
+     摆——等于给内容区钉了一条 432px 的底宽，窄屏只能横向滚动，用户看到的
+     就是「页面比屏幕宽、左边被切掉」。能换行、能收缩之后，一行放不下就落
+     第二行；`min-width: 0` 是让它在 flex 里真的可以被压窄。
+     **靠左排**：窄屏上换行之后，靠右会让第二行飘在半空，和上面的按钮对不上。 */
+  .toolbar-side {
+    width: 100%;
+    margin-left: 0;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    min-width: 0;
+    row-gap: 6px;
+  }
   .modes-sm .mode-btn { padding: 5px 9px; font-size: 12px; }
 
-  /* 手机上宽度最紧张：路径和按钮会各占一行（工具条允许换行），路径行本身
-     绝不换行——它一变高，吸顶容器就跟着变高，下面的网格会跳。 */
-  .toolbar-sticky { top: -10px; margin: -10px -10px 10px; padding: 10px 10px 6px; }
+  /* 手机上工具条**不吸顶**：路径 + 那排按钮 + 统计在窄屏要占三、四行，钉在
+     顶上等于永远少一块画面。滚动时跟着内容走，要改再滚回去。 */
+  .toolbar-sticky { position: static; margin: 0 0 10px; padding: 0; }
   .pathbar { flex: 1 1 100%; }
   .crumbs { font-size: 12.5px; }
   .crumb { max-width: 30vw; }
   .crumb-name { padding: 4px 5px; }
   .crumb.is-current .crumb-name { max-width: 46vw; }
   .crumb-menu { width: min(320px, calc(100vw - 20px)); }
-
-  /* 刷视频：文字压在画面上的部分要收，不然半个屏幕都被盖住。 */
-  .slide-overlay { padding: 14px 14px calc(18px + env(safe-area-inset-bottom)); gap: 10px; }
-  .slide-meta { max-width: 58vw; }
-  .slide-title { font-size: 14px; }
-  .slide-sub { font-size: 11.5px; }
-  .rail-btn { width: 42px; height: 42px; font-size: 14px; }
-  .feed-hud { top: calc(10px + env(safe-area-inset-top)); left: 10px; right: 10px; }
-  .chip { font-size: 12px; padding: 5px 10px; max-width: 52vw; }
 
   /* 图片查看器：翻页按钮退到两侧细条，把中间让给手势。 */
   .viewer-nav { width: 34px; height: 64px; font-size: 24px; }
@@ -1524,7 +1674,8 @@ button, .card, .crumb, .crumb-name, .crumb-chevron, .crumb-fold, .tree-folder, .
   .controls { gap: 2px; }
   .controls .icon-btn { width: 38px; height: 38px; }
   .controls-right { gap: 2px; }
-  #btnSnapshot, #btnStats, #btnDownload, #btnLoop { display: none; }
+  #btnSnapshot, #btnStats, #btnDownload, #btnLoop, #btnWallpaper { display: none; }
+  /* 播放顺序（顺序 / 随机）在手机上最常用，不能跟着上面那几条一起藏。 */
   .stat { display: none; }
   .time { font-size: 11.5px; margin-left: 4px; }
   .volume input { width: 62px; }
@@ -1542,13 +1693,12 @@ button, .card, .crumb, .crumb-name, .crumb-chevron, .crumb-fold, .tree-folder, .
 }
 
 @media (max-width: 420px) {
-  .grid { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); }
-  .slide-meta { max-width: 52vw; }
+  :root { --tile-base: 112px; }
   .viewer-meta { display: none; }
   .time { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
-  .feed-scroller { scroll-behavior: auto; }
+}
 }

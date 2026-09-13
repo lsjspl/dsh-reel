@@ -29,7 +29,7 @@ const userDataDir = mkdtempSync(join(tmpdir(), 'mv-layout-'))
 const port = 9339
 const chrome = spawn(
   CHROME,
-  ['--headless=new', `--remote-debugging-port=${port}`, `--user-data-dir=${userDataDir}`, '--no-first-run', '--no-sandbox', '--disable-gpu', 'about:blank'],
+  ['--headless=new', `--remote-debugging-port=${port}`, `--user-data-dir=${userDataDir}`, '--no-first-run', '--no-sandbox', '--disable-gpu', '--autoplay-policy=no-user-gesture-required', 'about:blank'],
   { stdio: 'ignore', windowsHide: true },
 )
 
@@ -177,7 +177,8 @@ try {
   check('拖到极窄时被下限拦住', clamped >= 190, `实际 ${clamped}`)
 
   // ── 列表视图各列 ──────────────────────────────────────────────────────
-  await evaluate('document.getElementById("viewToggle").click()')
+  // 视图切换现在是工具条上「网格 / 列表」两枚按钮（早先是一个 viewToggle 按钮）。
+  await evaluate(`document.querySelector('[data-view-btn="list"]').click()`)
   await sleep(800)
   check('切到列表视图', (await evaluate('document.body.dataset.view')) === 'list')
   const columns = await evaluate(`(() => {
@@ -195,6 +196,111 @@ try {
     })()`)
     check('短文件名不被截断', truncated === false)
   }
+
+  // ── 网格大小三档（小 / 中 / 大） ────────────────────────────────────────
+  //
+  // 以前只有一个尺寸，大屏上永远 5 列。这里钉住三件事：点一下真的换档（瓦片
+  // 宽度与列数都变）、非默认档在列表视图里不该出现、选过之后刷新还记得。
+  await evaluate(`document.querySelector('[data-view-btn="grid"]').click()`)
+  await sleep(800)
+  const gridShape = () =>
+    evaluate(`(() => {
+      const cards = [...document.querySelectorAll('#grid .card')]
+      if (cards.length === 0) return null
+      const top = Math.round(cards[0].getBoundingClientRect().top)
+      const row = cards.filter((card) => Math.abs(card.getBoundingClientRect().top - top) < 2)
+      return {
+        width: Math.round(cards[0].getBoundingClientRect().width),
+        columns: row.length,
+        tile: getComputedStyle(document.documentElement).getPropertyValue('--tile').trim(),
+        stored: localStorage.getItem('mv.tileSize'),
+        active: [...document.querySelectorAll('[data-tile-btn]')].filter((node) => node.classList.contains('is-active')).map((node) => node.dataset.tileBtn),
+      }
+    })()`)
+  const pickTile = async (index) => {
+    await evaluate(`document.querySelector('[data-tile-btn="${index}"]').click()`)
+    await sleep(700)
+    return gridShape()
+  }
+
+  // 开箱默认必须是「中」：早先 readTile 用 Number(null) 读出 0，把「没存过」当成
+  // 「小」——手机上一屏四列、一张卡 80 多像素，整张卡活像一个大的播放按钮。
+  const fresh = await gridShape()
+  check('开箱默认是「中」', fresh !== null && fresh.active.join(',') === '1', JSON.stringify(fresh))
+  // getComputedStyle 对自定义属性返回的是**解析后**的值，所以这里看到的是 200px。
+  check('「中」用设备基准宽（桌面 200px）', fresh !== null && fresh.tile === '200px', String(fresh?.tile))
+
+  const middle = await pickTile(1)
+  check('默认是「中」（瓦片按基准宽）', middle !== null && middle.active.join(',') === '1', JSON.stringify(middle))
+  const small = await pickTile(0)
+  check('点「小」瓦片变小', small !== null && small.width < middle.width - 10, `${middle?.width} → ${small?.width}`)
+  check('点「小」一屏列数变多', small !== null && small.columns > middle.columns, `${middle?.columns} → ${small?.columns}`)
+  const large = await pickTile(2)
+  check('点「大」瓦片变大', large !== null && large.width > middle.width + 10, `${middle?.width} → ${large?.width}`)
+  check('点「大」一屏列数变少', large !== null && large.columns < middle.columns, `${middle?.columns} → ${large?.columns}`)
+  check('选中态跟着走', large !== null && large.active.join(',') === '2', JSON.stringify(large))
+  check('档位存进 localStorage', large !== null && large.stored === '2', String(large?.stored))
+
+  // 换档之后分块的列数必须和实际列数一致（不然块边界会空出半行）。
+  const chunkShape = await evaluate(`(() => {
+    const chunks = [...document.querySelectorAll('#grid > .grid-chunk')]
+    return chunks.slice(0, 2).map((chunk) => {
+      const cards = [...chunk.querySelectorAll('.card')]
+      if (cards.length === 0) return 0
+      const top = Math.round(cards[0].getBoundingClientRect().top)
+      return cards.filter((card) => Math.abs(card.getBoundingClientRect().top - top) < 2).length
+    })
+  })()`)
+  check('分块列数与网格列数一致', chunkShape.every((count) => count === large.columns), `${JSON.stringify(chunkShape)} vs ${large?.columns}`)
+
+  // 列表视图里那组按钮该藏起来（瓦片宽度对列表没用）。
+  await evaluate(`document.querySelector('[data-view-btn="list"]').click()`)
+  await sleep(600)
+  const tileGroupInList = await evaluate(`getComputedStyle(document.getElementById('tileGroup')).display`)
+  check('列表视图里藏起网格大小', tileGroupInList === 'none', tileGroupInList)
+
+  // 刷新之后仍然是「大」。
+  await send('Page.navigate', { url: `${origin}/reel?k=${encodeURIComponent(key)}` })
+  await sleep(2500)
+  const afterReload = await gridShape()
+  check('刷新后记住选的那一档', afterReload !== null && afterReload.active.join(',') === '2' && afterReload.stored === '2', JSON.stringify(afterReload))
+  // 收尾回到默认，别把状态留给后面的人。
+  await pickTile(1)
+
+  // ── 「看视频」：一键随机 + 铺满这一页 ────────────────────────────────────
+  //
+  // 桌面上播放器默认是窗口形态，这个按钮要的是**页内全屏**；顺序必须是随机，
+  // 而且 ⇄ 那枚要跟着点亮（用户看到的和按钮亮的是同一件事）。
+  const watch = await evaluate(`(async () => {
+    const button = document.getElementById('watchRandomBtn')
+    if (button === null) return { ok: false, reason: '没有看视频按钮' }
+    const box = button.getBoundingClientRect()
+    button.click()
+    const deadline = Date.now() + 12000
+    while (Date.now() < deadline && document.getElementById('player').hidden) await new Promise((r) => setTimeout(r, 200))
+    await new Promise((r) => setTimeout(r, 2500))
+    return {
+      ok: true,
+      buttonVisible: box.width > 0 && box.height >= 28,
+      open: document.getElementById('player').hidden === false,
+      pageFull: document.getElementById('player').classList.contains('is-page-full'),
+      gap: Math.round(document.getElementById('playerWindow').getBoundingClientRect().left),
+      orderOn: document.getElementById('btnOrder').classList.contains('is-on'),
+      stored: localStorage.getItem('mv.order'),
+      playing: document.getElementById('video').paused === false,
+      name: document.getElementById('playerName').textContent,
+    }
+  })()`)
+  console.log('看视频:', JSON.stringify(watch))
+  check('顶栏有「看视频」按钮', watch.ok === true && watch.buttonVisible === true, JSON.stringify(watch))
+  check('点开就是铺满这一页（桌面也一样）', watch.pageFull === true && watch.gap === 0, JSON.stringify(watch))
+  check('打开就是随机播放', watch.orderOn === true && String(watch.stored).includes('random'), JSON.stringify(watch))
+  check('确实在放，而且放的是列表里的一条', watch.playing === true && String(watch.name).length > 0, JSON.stringify(watch))
+  await evaluate('document.getElementById("btnClose").click()')
+  await sleep(500)
+  // 收尾：顺序切回去，别把「随机」留给后面的人。
+  await evaluate(`(() => { const button = document.getElementById('btnOrder'); if (button !== null) button.click() })()`)
+  await sleep(300)
 
   // ── 桌面端不该误命中移动端规则 ────────────────────────────────────────
   check('1440px 不命中 720px 断点', (await evaluate('window.matchMedia("(max-width: 720px)").matches')) === false)

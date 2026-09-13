@@ -104,6 +104,17 @@ await send('Emulation.setDeviceMetricsOverride', {
   screenHeight: 844,
 })
 await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 })
+// 真机的媒体特性也要模拟：只改视口的话 `(hover: none)` / `(pointer: coarse)`
+// 这些规则一条都不会命中，而它们正是触摸端专属的那部分（比如卡片上的播放圈）。
+await send('Emulation.setEmulatedMedia', {
+  media: '',
+  features: [
+    { name: 'hover', value: 'none' },
+    { name: 'pointer', value: 'coarse' },
+    { name: 'any-hover', value: 'none' },
+    { name: 'any-pointer', value: 'coarse' },
+  ],
+})
 await send('Emulation.setUserAgentOverride', {
   userAgent:
     'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
@@ -256,12 +267,113 @@ try {
   check('侧边栏在窄屏隐藏', layout.sidebarHidden === true)
   check('网格是多列自适应', layout.gridColumns >= 2, `实际 ${layout.gridColumns} 列`)
 
+  // 横向溢出的第一现场是**内容区**（`#content` 自己就是滚动容器），不是 document：
+  // 早先工具条右侧那排按钮是 flex: none + nowrap，给内容区钉了一条 432px 的底宽，
+  // 于是窄屏上只有内容区能横向滚、document 宽度却正常——只查 document 的断言
+  // 一条都发现不了。这里同时量内容区，并且再压一档 320px。
+  const narrowProbe = `(() => {
+    const content = document.getElementById('content')
+    const side = document.querySelector('.toolbar-side')
+    return {
+      innerWidth: window.innerWidth,
+      contentClientW: content.clientWidth,
+      contentScrollW: content.scrollWidth,
+      contentPadLeft: parseFloat(getComputedStyle(content).paddingLeft),
+      sideRight: Math.round(side.getBoundingClientRect().right),
+      sideWrap: getComputedStyle(side).flexWrap,
+      firstButtonLeft: Math.round(side.firstElementChild.getBoundingClientRect().left),
+      stickyPosition: getComputedStyle(document.getElementById('toolbarSticky')).position,
+    }
+  })()`
+  const wide = await evaluate(narrowProbe)
+  check('内容区没有横向溢出（390px）', wide.contentScrollW <= wide.contentClientW + 1, JSON.stringify(wide))
+  check('工具条那排按钮没顶出屏幕（390px）', wide.sideRight <= wide.innerWidth + 1, JSON.stringify(wide))
+  check('手机上那排按钮靠左排', Math.abs(wide.firstButtonLeft - wide.contentPadLeft) <= 2, JSON.stringify(wide))
+  check('手机上工具条不吸顶（跟着内容滚）', wide.stickyPosition === 'static', JSON.stringify(wide))
+
+  await send('Emulation.setDeviceMetricsOverride', {
+    width: 320,
+    height: 844,
+    deviceScaleFactor: 3,
+    mobile: true,
+    screenWidth: 320,
+    screenHeight: 844,
+  })
+  await sleep(700)
+  const narrow = await evaluate(narrowProbe)
+  check('320px 窄屏也不横向溢出', narrow.contentScrollW <= narrow.contentClientW + 1, JSON.stringify(narrow))
+  check('工具条按钮在窄屏允许换行', narrow.sideWrap === 'wrap', JSON.stringify(narrow))
+  check('窄屏下按钮仍在屏幕内', narrow.sideRight <= narrow.innerWidth + 1, JSON.stringify(narrow))
+  check('窄屏下按钮也靠左', Math.abs(narrow.firstButtonLeft - narrow.contentPadLeft) <= 2, JSON.stringify(narrow))
+
+  // 恢复 iPhone 视口：后面的手势坐标都按 390 算。
+  await send('Emulation.setDeviceMetricsOverride', {
+    width: 390,
+    height: 844,
+    deviceScaleFactor: 3,
+    mobile: true,
+    screenWidth: 390,
+    screenHeight: 844,
+  })
+  await sleep(600)
+
+  // 网格大小三档：手机上「大」必须是一屏一张（最宽那档就该只有一个封面），
+  // 「中」是原来那档、开箱默认就是它（readTile 曾把空 localStorage 读成「小」，
+  // 手机上一屏四列、一张卡 80 多像素，整张卡活像一个大的播放按钮）。
+  const openingTile = await evaluate(`[...document.querySelectorAll('[data-tile-btn]')].filter((node) => node.classList.contains('is-active')).map((node) => node.dataset.tileBtn).join(',')`)
+  check('手机上开箱默认是「中」', openingTile === '1', openingTile)
+  const tileShape = (index) =>
+    evaluate(`(async () => {
+      document.querySelector('[data-tile-btn="${index}"]').click()
+      await new Promise((r) => setTimeout(r, 700))
+      const cards = [...document.querySelectorAll('#grid .card')]
+      if (cards.length === 0) return null
+      const top = Math.round(cards[0].getBoundingClientRect().top)
+      const ring = document.querySelector('.play-overlay .ring')
+      return {
+        width: Math.round(cards[0].getBoundingClientRect().width),
+        columns: cards.filter((card) => Math.abs(card.getBoundingClientRect().top - top) < 2).length,
+        ring: ring === null ? 0 : Math.round(ring.getBoundingClientRect().width),
+        active: [...document.querySelectorAll('[data-tile-btn]')].filter((node) => node.classList.contains('is-active')).map((node) => node.dataset.tileBtn),
+      }
+    })()`)
+  const tileSmall = await tileShape(0)
+  const tileMiddle = await tileShape(1)
+  const tileLarge = await tileShape(2)
+  console.log('网格三档:', JSON.stringify({ small: tileSmall, middle: tileMiddle, large: tileLarge }))
+  check('手机上「小」列数更多', tileSmall !== null && tileSmall.columns > tileMiddle.columns, JSON.stringify({ small: tileSmall, middle: tileMiddle }))
+  check('手机上「大」是一屏一张', tileLarge !== null && tileLarge.columns === 1, JSON.stringify(tileLarge))
+  check('手机上「大」比「中」大一半以上', tileLarge !== null && tileLarge.width > tileMiddle.width * 1.5, `${tileMiddle?.width} → ${tileLarge?.width}`)
+  check('触摸端小瓦片上也没有播放圈', tileSmall !== null && tileSmall.ring === 0, JSON.stringify(tileSmall))
+  await tileShape(1)
+
   const topbarHeight = await evaluate(`document.querySelector('.topbar').getBoundingClientRect().height`)
   check('顶栏高度收敛', topbarHeight <= 56, `实际 ${topbarHeight}`)
 
+  // 触摸端每张封面上不该再压一个播放圈：一屏十几张卡全是按钮。视频的身份由
+  // 左上角「▶ 视频」角标表达，点开就是播放。（鼠标端仍然是悬停才出现。）
+  const cardOverlay = await evaluate(`(() => {
+    const card = [...document.querySelectorAll('.card-video')].find((node) => node.querySelector('.play-overlay') !== null)
+    if (card === undefined) return null
+    const overlay = card.querySelector('.play-overlay')
+    return {
+      coarse: window.matchMedia('(pointer: coarse)').matches,
+      noHover: window.matchMedia('(hover: none)').matches,
+      overlayDisplay: getComputedStyle(overlay).display,
+      kindBadge: card.querySelector('.kind-badge')?.textContent ?? '',
+    }
+  })()`)
+  check('触摸端卡片上不再压播放圈', cardOverlay !== null && cardOverlay.overlayDisplay === 'none', JSON.stringify(cardOverlay))
+  check('「视频」身份仍由角标说明', cardOverlay !== null && cardOverlay.kindBadge.includes('视频'), JSON.stringify(cardOverlay))
+  check('模拟的是触摸端媒体特性', cardOverlay !== null && cardOverlay.coarse === true && cardOverlay.noHover === true, JSON.stringify(cardOverlay))
+
   // ── 2. 触摸目标尺寸 ─────────────────────────────────────────────────────
+  //
+  // 早先这里还量 settingsBtn / viewToggle：设置抽屉和「视图切换」按钮都已经从
+  // 页面上拿掉（目录改在 dsh 的插件配置里加，视图改由工具条上那两枚按钮承担），
+  // 所以只量还在的那两个——点已经不存在的 id 只会把整轮测试打断。
   const targets = await evaluate(`(() => {
-    const ids = ['settingsBtn', 'viewToggle', 'sortToggle', 'refreshBtn']
+    const ids = ['sortToggle', 'refreshBtn']
     return ids.map((id) => {
       const rect = document.getElementById(id).getBoundingClientRect()
       return { id, w: Math.round(rect.width), h: Math.round(rect.height) }
@@ -320,46 +432,145 @@ try {
     await sleep(300)
   }
 
-  // ── 4. 刷视频模式：滑动吸附 + 横滑翻页 + 点按暂停 ───────────────────────
-  await evaluate(`document.querySelector('[data-mode-btn="feed"]').click()`)
-  const slidesReady = await waitFor('document.querySelectorAll(".slide").length > 0')
-  check('刷视频在 15s 内出内容', slidesReady === true)
-
-  const feedState = await evaluate(`(() => {
-    const scroller = document.querySelector('.feed-scroller')
-    return {
-      slides: document.querySelectorAll('.slide').length,
-      scrollerHeight: scroller === null ? -1 : Math.round(scroller.getBoundingClientRect().height),
-      scrollHeight: scroller === null ? -1 : scroller.scrollHeight,
-      snapType: scroller === null ? '(缺元素)' : getComputedStyle(scroller).scrollSnapType,
-      feedPaneHidden: document.getElementById('feedPane')?.hidden ?? '(缺元素)',
-      feedEmptyHidden: document.getElementById('feedEmpty')?.hidden ?? '(缺元素)',
-      toasts: document.getElementById('toasts')?.textContent ?? '',
-    }
+  // ── 4. 播放器就是手机上的「刷」：整页打开 + 上下滑换条 + 顺序 / 随机 ─────
+  //
+  // 独立的刷视频面板已经拿掉：点开一条视频，播放器直接铺满这一页，手指往上一推
+  // 就是下一条。这一段钉住三件事：打开即整页、上下滑换条、顺序 / 随机。
+  const playerOpen = await evaluate(`(async () => {
+    const card = [...document.querySelectorAll('.card[data-key]')].find((node) => node.classList.contains('card-video'))
+    if (card === undefined) return { ok: false, reason: '这个目录里没有视频卡片' }
+    card.click()
+    const deadline = Date.now() + 12000
+    while (Date.now() < deadline && document.getElementById('player').hidden) await new Promise((r) => setTimeout(r, 200))
+    return { ok: true, key: card.dataset.key, hidden: document.getElementById('player').hidden }
   })()`)
-  check('刷视频有内容', feedState.slides > 0, JSON.stringify(feedState))
-  check('滚动容器占满视口', feedState.scrollerHeight >= 700, `实际 ${feedState.scrollerHeight}`)
-  check('开启了纵向吸附', feedState.snapType.includes('y'), feedState.snapType)
+  console.log('播放器打开:', JSON.stringify(playerOpen))
 
-  // 纵向滑动 → 到第二条
-  const firstTop = await evaluate(`Math.round(document.querySelector('.slide').getBoundingClientRect().top)`)
-  await touchDrag({ x: 195, y: 640 }, { x: 195, y: 200 }, 14)
-  await sleep(900)
-  const secondTop = await evaluate(`Math.round(document.querySelector('.slide').getBoundingClientRect().top)`)
-  check('上滑切到下一条', secondTop < firstTop - 100, `${firstTop} → ${secondTop}`)
+  if (playerOpen.ok !== true) {
+    check('列表里有视频卡片（手机端的刷视频要在播放器里验证）', false, JSON.stringify(playerOpen))
+  } else {
+    await sleep(1200)
+    const style = await evaluate(`(() => {
+      const player = document.getElementById('player')
+      const rect = document.getElementById('playerWindow').getBoundingClientRect()
+      return {
+        pageFull: player.classList.contains('is-page-full'),
+        gapX: Math.round(rect.left),
+        gapY: Math.round(rect.top),
+        width: Math.round(rect.width),
+        viewport: window.innerWidth,
+        orderButton: document.getElementById('btnOrder') !== null,
+      }
+    })()`)
+    console.log('播放器形态:', JSON.stringify(style))
+    check('手机上打开播放器就是整页（不是小窗）', style.pageFull === true && style.gapX === 0 && style.gapY === 0, JSON.stringify(style))
+    check('控件条上有顺序 / 随机按钮', style.orderButton === true, JSON.stringify(style))
 
-  const scrolled = await evaluate(`Math.round(document.querySelector('.feed-scroller').scrollTop)`)
-  check('scroller 真的滚动了', scrolled > 100, `实际 ${scrolled}`)
+    const currentName = () => evaluate(`document.getElementById('playerName').textContent`)
+    const first = await currentName()
 
-  // 点按画面 → 暂停/播放切换（当前条是图片时不适用，所以只验证不报错）
-  await tap(195, 420)
-  await sleep(400)
+    // 上滑 → 下一条，而且要是**跟着手指滑**的那种：中途画面必须有位移、底下要
+    // 露出下一条的封面，松手之后才真的换条。这里手工发触摸序列，在松手前取样。
+    const dragPoint = (y) => [{ x: 195, y, radiusX: 8, radiusY: 8, force: 1, id: 1 }]
+    await send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: dragPoint(700) })
+    for (const y of [660, 600, 520, 440]) {
+      await send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: dragPoint(y) })
+      await sleep(16)
+    }
+    const midDrag = await evaluate(`(() => {
+      const video = document.getElementById('video')
+      const peek = document.getElementById('playerPeek')
+      return {
+        transform: getComputedStyle(video).transform,
+        peekVisible: peek.hidden === false,
+        peekPoster: (peek.style.backgroundImage || '').includes('/reel/thumb'),
+        peekName: document.getElementById('playerPeekName').textContent,
+        name: document.getElementById('playerName').textContent,
+      }
+    })()`)
+    console.log('拖动中:', JSON.stringify(midDrag))
+    check('拖动时画面跟着手指走', midDrag.transform !== 'none' && midDrag.transform !== '', midDrag.transform)
+    check('拖动时露出邻居的封面', midDrag.peekVisible === true && (midDrag.peekPoster || midDrag.peekName !== ''), JSON.stringify(midDrag))
+    check('拖动时还没换条', midDrag.name === first, `${first} → ${midDrag.name}`)
 
-  // 横向滑动也不应该把页面搞坏
-  await touchDrag({ x: 320, y: 420 }, { x: 80, y: 425 })
-  await sleep(700)
-  const stillAlive = await evaluate(`document.querySelectorAll('.slide').length > 0 && document.getElementById('feedPane').hidden === false`)
-  check('横滑后刷视频模式仍在', stillAlive === true)
+    await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+    await sleep(2200)
+    const second = await currentName()
+    check('松手滑到下一条', second !== first && second !== '', `${first} → ${second}`)
+    const settled = await evaluate(`(() => ({
+      transform: document.getElementById('video').style.transform,
+      peekHidden: document.getElementById('playerPeek').hidden,
+    }))()`)
+    check('滑完把位移和衬底收干净', settled.transform === '' && settled.peekHidden === true, JSON.stringify(settled))
+
+    // 慢慢拖一点点（距离和速度都没过阈值）松手：应该弹回来，不换条。
+    await send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: dragPoint(600) })
+    for (const y of [585, 570, 555]) {
+      await send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: dragPoint(y) })
+      await sleep(80)
+    }
+    await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+    await sleep(800)
+    const snapped = await evaluate(`(() => ({
+      name: document.getElementById('playerName').textContent,
+      transform: document.getElementById('video').style.transform,
+      peekHidden: document.getElementById('playerPeek').hidden,
+    }))()`)
+    check('没滑过一半会弹回来、不换条', snapped.name === second && snapped.transform === '' && snapped.peekHidden === true, JSON.stringify(snapped))
+
+    // 下滑 → 回到上一条（快手一甩也算数，所以用连续的拖动）。
+    await touchDrag({ x: 195, y: 220 }, { x: 195, y: 700 }, 14)
+    await sleep(2200)
+    const back = await currentName()
+    check('下滑回上一条', back === first, `${second} → ${back}`)
+
+    // 顺序 / 随机：点一下切档，当前这条不能跟着乱跳（只是它后面的次序变了）。
+    const order = await evaluate(`(async () => {
+      const button = document.getElementById('btnOrder')
+      const snap = () => ({
+        on: button.classList.contains('is-on'),
+        title: button.title,
+        stored: localStorage.getItem('mv.order'),
+        name: document.getElementById('playerName').textContent,
+      })
+      const before = snap()
+      button.click()
+      await new Promise((r) => setTimeout(r, 300))
+      const after = snap()
+      // 收尾：切回顺序，后面的用例不该被这一段改掉的顺序影响。
+      button.click()
+      await new Promise((r) => setTimeout(r, 300))
+      return { before, after, restored: localStorage.getItem('mv.order') }
+    })()`)
+    console.log('顺序 / 随机:', JSON.stringify(order))
+    check('点一下切到随机', order.before.on === false && order.after.on === true, JSON.stringify(order))
+    check('随机的状态记住了', String(order.after.stored).includes('random'), String(order.after.stored))
+    check('切顺序时当前这条不动', order.before.name === order.after.name, JSON.stringify(order))
+    check('收尾切回顺序', String(order.restored).includes('seq'), String(order.restored))
+
+    await evaluate('document.getElementById("btnClose").click()')
+    await sleep(500)
+    const closed = await evaluate(`document.getElementById('player').hidden === true && document.getElementById('player').classList.contains('is-page-full') === false`)
+    check('关掉播放器回到列表（并收回整页）', closed === true)
+
+    // 面板声明了 touch-action: none（为了接住上下滑），顺手钉住「音量条还能拖」：
+    // 这两件事在触摸端是互相牵制的，回归时最先坏的就是它。
+    await evaluate(`(() => {
+      const card = [...document.querySelectorAll('.card[data-key]')].find((node) => node.classList.contains('card-video'))
+      card.click()
+    })()`)
+    await sleep(1500)
+    const slider = await evaluate(`(() => {
+      const rect = document.getElementById('volumeRange').getBoundingClientRect()
+      return { left: Math.round(rect.left), right: Math.round(rect.right), y: Math.round(rect.top + rect.height / 2), value: Number(document.getElementById('volumeRange').value) }
+    })()`)
+    await touchDrag({ x: slider.right - 6, y: slider.y }, { x: slider.left + 6, y: slider.y }, 8)
+    await sleep(400)
+    const dragged = await evaluate('Number(document.getElementById("volumeRange").value)')
+    check('音量条在手机上仍能拖', dragged < slider.value, `${slider.value} → ${dragged}`)
+    await evaluate('document.getElementById("btnClose").click()')
+    await sleep(300)
+  }
 
   // ── 5. 控制台必须干净 ───────────────────────────────────────────────────
   check('手机端没有控制台错误', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '))
@@ -370,7 +581,11 @@ try {
   await fetch(`http://127.0.0.1:${port}/json/close/${targetId}`).catch(() => {})
   chrome.kill('SIGKILL')
   await sleep(300)
-  rmSync(userDataDir, { recursive: true, force: true })
+  try {
+    rmSync(userDataDir, { recursive: true, force: true })
+  } catch {
+    /* Chrome 有时还攥着 profile 目录，删不掉不该让测试结果变成崩栈 */
+  }
 }
 
 console.log(`\n通过 ${passes} 项`)
