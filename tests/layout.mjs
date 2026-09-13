@@ -150,7 +150,7 @@ try {
 
   // 目录名再长也不能把行撑高：单行省略。
   const rowsSingleLine = await evaluate(`(() => {
-    const rows = [...document.querySelectorAll('.tree-root-name, .tree-folder')]
+    const rows = [...document.querySelectorAll('.tree-root-name, .tree-library-name, .tree-folder')]
     if (rows.length === 0) return true
     return rows.every((row) => row.getBoundingClientRect().height < 40)
   })()`)

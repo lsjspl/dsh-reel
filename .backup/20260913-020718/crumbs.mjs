@@ -539,6 +539,7 @@ runInNewContext(appSource, sandbox, { filename: 'app.js' })
 // 每次启动都会重建 DOM，所以这些句柄要现取，不能攥着第一轮的节点。
 const crumbHost = () => doc.getElementById('crumbs')
 const upButton = () => doc.getElementById('crumbUp')
+const scopeToggle = () => doc.getElementById('scopeToggle')
 
 const waitBoot = async () => {
   for (let i = 0; i < 60; i += 1) {
@@ -560,6 +561,7 @@ const shape = () => ({
   separators: crumbHost().querySelectorAll('.crumb-sep').length,
   current: crumbHost().querySelector('.crumb.is-current .crumb-name')?.textContent ?? '',
   upDisabled: upButton().disabled,
+  scopeOn: scopeToggle().classList.contains('is-on'),
 })
 
 /**
@@ -622,14 +624,13 @@ const deep = await at(['a', 'a1', 'a1x', 'deep', 'deeper', 'deepest'])
 if (process.env.CRUMB_DEBUG === '1') console.log('  本层重画次数:', renderLog.length, '各次重画前节点数:', JSON.stringify(renderLog))
 checkEqual('深路径保住根、当前层与父级', [deep.links, deep.current], [['根目录', 'deeper'], 'deepest'])
 if (process.env.CRUMB_DEBUG === '1') {
-  const host = crumbHost()
-  const seps = host.querySelectorAll('.crumb-sep')
-  console.log('  直接子节点:', host.childNodes.length, ' 匹配到的 .crumb-sep:', seps.length)
-  for (const sep of seps) {
-    const chain = []
-    for (let node = sep; node !== null && node !== undefined; node = node.parentElement) chain.push(node.className || node.tagName)
-    console.log('   sep', sep.uid, JSON.stringify(sep.textContent), '祖先链:', chain.join(' < '))
-  }
+  const dump = (node, depth = 0) => [
+    `${'  '.repeat(depth)}[${node.className || node.tagName}] "${node.textContent}" parent=${node.parentElement?.className || node.parentElement?.tagName || '(无)'}`,
+    ...node.children.map((child) => dump(child, depth + 1)),
+  ].join('\n')
+  console.log('  路径行 DOM:\n' + dump(crumbHost()))
+  console.log('  直接子节点数:', crumbHost().childNodes.length, ' children():', crumbHost().children.length)
+  console.log('  匹配 .crumb-sep 的节点:', JSON.stringify(crumbHost().querySelectorAll('.crumb-sep').map((n) => `${n.className}@${n.parentElement?.className || n.parentElement?.tagName}`)))
 }
 check('深路径把中间收成「…」', deep.folds === 1, JSON.stringify(deep))
 check('深路径不换行（分隔符数与可见级数一致）', deep.separators === 3, JSON.stringify(deep))
@@ -660,7 +661,7 @@ check('点「▾」弹出菜单', menu !== null)
 if (menu !== null) {
   const rows = menu.querySelectorAll('.crumb-menu-item')
   checkEqual('菜单里除了子文件夹没有别的动作', rows.length, menu.querySelectorAll('.crumb-menu-item[data-folder-entry]').length)
-  check('菜单里没有范围项（范围功能已整体移除）', menu.querySelector('.crumb-menu-item[data-all-entry]') === null)
+  check('菜单里没有范围项（范围在工具条开关上）', menu.querySelector('.crumb-menu-item[data-all-entry]') === null)
   check('菜单里没有「只看根目录这一层」的旧项', menu.querySelector('.crumb-menu-item[data-root-entry]') === null)
   checkEqual('菜单里是这一级的子文件夹', menu.querySelectorAll('.crumb-menu-item[data-folder-entry]').map((node) => node.querySelector('.crumb-menu-name').textContent), ['a', 'b'])
   checkEqual('菜单带上每个子目录的媒体数', menu.querySelectorAll('.crumb-menu-tally').map((node) => node.textContent), ['2 个', '空'])
@@ -671,12 +672,17 @@ if (menu !== null) {
   check('进去之后菜单关掉', doc.querySelector('.crumb-menu') === null)
 }
 
-// 8. 范围功能已经整体删掉：工具条上没有这枚开关，路径行上也没有范围标记，
-//    也不会再往 localStorage 里写 mv.scope。
-const scopeGone = await at(['a'])
-check('工具条上没有范围开关', doc.getElementById('scopeToggle') === null || doc.getElementById('scopeToggle').isConnected === false)
-check('路径行上没有「所有层级」标记', crumbHost().querySelectorAll('.crumb-scope, .crumb-current').length === 0, JSON.stringify(scopeGone))
-check('没有再写 mv.scope', localStorage.getItem('mv.scope') === null, String(localStorage.getItem('mv.scope')))
+// 8. 范围开关：独立于路径行、状态自述、范围由工具条那枚开关表达。
+const beforeToggle = shape()
+check('默认是「本层」', beforeToggle.scopeOn === false && scopeToggle().textContent === '本层', JSON.stringify(beforeToggle))
+scopeToggle().click()
+await sleep(80)
+const allOn = shape()
+check('打开后开关自述「所有层级」', allOn.scopeOn === true && scopeToggle().textContent === '所有层级', JSON.stringify(allOn))
+check('范围不改变路径本身', JSON.stringify(allOn) === JSON.stringify({ ...beforeToggle, scopeOn: true }), JSON.stringify(allOn))
+scopeToggle().click()
+await sleep(80)
+check('关掉后开关回到「本层」', scopeToggle().textContent === '本层' && scopeToggle().classList.contains('is-on') === false)
 
 // 9. 「返回上一级」按钮与 Backspace。
 const start = await at(['a', 'a1'])

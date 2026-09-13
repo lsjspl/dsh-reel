@@ -74,16 +74,18 @@ const waitFor = async (expression, timeoutMs = 20000) => {
 /**
  * 显式把工具条恢复到一个已知状态。
  *
- * 这个脚本连续做十几段互不相干的检查，而每次点击都会改变 内容/分组。
+ * 这个脚本连续做十几段互不相干的检查，而每次点击都会改变 范围/内容。
  * 早期版本靠「上一步留下的状态」接着做，结果一处改动就让后面几条假失败。
  * 现在每段开头先声明自己需要什么状态，而不是猜。
  *
- * @param {{kinds?: 'all'|'video'|'image', content?: 'current'|'all'|'folder', atRoot?: boolean}} want - 目标状态。
+ * 范围现在是工具条上的独立开关（#scopeToggle），切换目录不会顺手把它关掉，
+ * 所以这里要显式设：先回根（面包屑上第一枚名字），再按需要打开开关。
+ *
+ * @param {{scope?: 'dir'|'all', kinds?: 'all'|'video'|'image'}} want - 目标状态。
  */
 const setUiState = async (want) => {
   const clicks = []
   if (want.kinds !== undefined) clicks.push(`['data-kind-btn', '${want.kinds}']`)
-  if (want.content !== undefined) clicks.push(`['data-content-btn', '${want.content}']`)
   await ev(`(() => {
     for (const [attr, value] of [${clicks.join(', ')}]) {
       const node = document.querySelector('[' + attr + '="' + value + '"]')
@@ -91,18 +93,40 @@ const setUiState = async (want) => {
     }
     return true
   })()`)
-  if (want.atRoot === true) await clickCrumbRootEntry()
+  if (want.scope !== undefined) {
+    await clickCrumbRootEntry()
+    if (want.scope === 'all') await enterAllLevels()
+  }
   await sleep(1200)
-  await waitFor('document.querySelectorAll(".card, .folder-group, .folder-row").length > 0', 25000)
+  await waitFor('document.querySelectorAll(".card, .folder-row").length > 0', 25000)
 }
 
 /**
- * 回到根目录：点路径行上第一枚（根）名字。
+ * 把范围切到「所有层级」：工具条上的独立开关。
+ *
+ * 范围不再挂在面包屑菜单里（那里只有路径和子文件夹），所以直接点 #scopeToggle。
+ *
+ * @returns {Promise<boolean>} 开关确实被点亮。
+ */
+const enterAllLevels = async () => {
+  const clicked = await ev(`(async () => {
+    const toggle = document.getElementById('scopeToggle')
+    if (toggle === null) return false
+    if (!toggle.classList.contains('is-on')) toggle.click()
+    await new Promise((r) => setTimeout(r, 2500))
+    return toggle.classList.contains('is-on')
+  })()`)
+  await sleep(600)
+  return clicked === true
+}
+
+/**
+ * 回到根目录的「本层」视图：先回根（路径行上第一枚名字），再关掉范围开关。
  *
  * 面包屑名字现在就是导航本身——点根名字 = 回根目录这一层。已经在根上时，
- * 路径行里根本没有「根」这一枚（当前层不是按钮），那就是已经到了。
+ * 路径行里根本没有「根」这一枚（当前层不是按钮），这时只关开关。
  *
- * @returns {Promise<boolean>} 当前确实在根目录上。
+ * @returns {Promise<boolean>} 已经在根上且开关是关的。
  */
 const clickCrumbRootEntry = async () => {
   const ok = await ev(`(async () => {
@@ -112,7 +136,12 @@ const clickCrumbRootEntry = async () => {
       root.click()
       await new Promise((r) => setTimeout(r, 1500))
     }
-    return new URLSearchParams(location.search).get('k') === 'r0'
+    const toggle = document.getElementById('scopeToggle')
+    if (toggle !== null && toggle.classList.contains('is-on')) {
+      toggle.click()
+      await new Promise((r) => setTimeout(r, 1500))
+    }
+    return new URLSearchParams(location.search).get('k') === 'r0' && (toggle === null || !toggle.classList.contains('is-on'))
   })()`)
   await sleep(600)
   return ok === true
@@ -227,12 +256,10 @@ try {
 
   // 第二个根默认收起，点它的名字应该展开出子目录（点击 = 切换展开，不导航）
   if (session > 1) {
-    // 用「配置根」集合的索引定位第二个根，而不是 :nth-child——各根挂在
-    // 「库」的子层里，父节点里还有库自己那一行（类名不同，不参与 .tree-root）。
-    const beforeExpand = await ev('document.querySelectorAll("#tree .tree-root")[1].querySelectorAll(".tree-folder").length')
+    const beforeExpand = await ev('document.querySelectorAll("#tree .tree-root:nth-child(2) .tree-folder").length')
     await ev(`document.querySelectorAll('#tree .tree-root-name')[1].click()`)
     await sleep(1800)
-    const afterExpand = await ev('document.querySelectorAll("#tree .tree-root")[1].querySelectorAll(".tree-folder").length')
+    const afterExpand = await ev('document.querySelectorAll("#tree .tree-root:nth-child(2) .tree-folder").length')
     check('第二个根可以展开出子目录', afterExpand > 0, `展开前 ${beforeExpand} 行，展开后 ${afterExpand} 行`)
   }
 
@@ -282,17 +309,19 @@ try {
     cards: document.querySelectorAll('.card').length,
     summary: document.getElementById('summary').textContent,
     names: [...document.querySelectorAll('#crumbs .crumb-name')].map((n) => n.textContent),
-    links: [...document.querySelectorAll('#crumbs .crumb-name')].filter((n) => n.disabled !== true).map((n) => n.textContent),
-    currentLabel: document.querySelector('#crumbs .crumb.is-current .crumb-name')?.textContent ?? '',
+    currentIsNotButton: document.querySelector('#crumbs .crumb-current.crumb-name, #crumbs button.crumb-current') === null,
+    currentLabel: document.querySelector('#crumbs .crumb-current .crumb-label')?.textContent ?? '',
     chevrons: document.querySelectorAll('#crumbs .crumb-chevron').length,
     separators: document.querySelectorAll('#crumbs .crumb-sep').length,
     upDisabled: document.getElementById('crumbUp').disabled,
+    scopeOn: document.getElementById('scopeToggle').classList.contains('is-on'),
   }))()`)
   console.log('路径行结构:', JSON.stringify(dirState))
-  check('路径行把根和当前层分开了', dirState.names.length === 2 && dirState.separators === 1, dirState.crumbs)
-  check('根可点、当前层不可点', dirState.links.length === 1 && dirState.links[0] !== targetName, JSON.stringify(dirState))
+  check('路径行把根和当前层分开了', dirState.names.length === 1 && dirState.separators === 1, dirState.crumbs)
+  check('根是按钮、当前层不是按钮', dirState.names.length === 1 && dirState.currentIsNotButton === true, JSON.stringify(dirState))
   check('当前层写出了目录名', dirState.currentLabel === targetName, `「${dirState.currentLabel}」/ 目标「${targetName}」`)
   check('子目录里「返回上一级」可用', dirState.upDisabled === false)
+  check('本层视图下范围开关是关的', dirState.scopeOn === false)
 
   // 点根名字 = 直接回根目录这一层。旧设计这里弹的是菜单。
   const clickRootName = await ev(`(async () => {
@@ -304,7 +333,7 @@ try {
       clicked: true,
       menuOpened: document.querySelector('.crumb-menu') !== null,
       key: new URLSearchParams(location.search).get('k'),
-      current: document.querySelector('#crumbs .crumb.is-current .crumb-name')?.textContent ?? '',
+      current: document.querySelector('#crumbs .crumb-current .crumb-label')?.textContent ?? '',
       upDisabled: document.getElementById('crumbUp').disabled,
     }
   })()`)
@@ -322,7 +351,7 @@ try {
     const up = document.getElementById('crumbUp')
     up.click()
     await new Promise((r) => setTimeout(r, 2000))
-    return { down, up: new URLSearchParams(location.search).get('k'), current: document.querySelector('#crumbs .crumb.is-current .crumb-name')?.textContent ?? '' }
+    return { down, up: new URLSearchParams(location.search).get('k'), current: document.querySelector('#crumbs .crumb-current .crumb-label')?.textContent ?? '' }
   })()`)
   console.log('上一级按钮:', JSON.stringify(upButton))
   check('「返回上一级」回到父目录', upButton.up === 'r0', JSON.stringify(upButton))
@@ -353,17 +382,56 @@ try {
   })()`)
   console.log('子文件夹菜单探测:', JSON.stringify(menuProbe))
   check('点「▾」弹出子文件夹菜单', menuProbe.opened === true, JSON.stringify(menuProbe))
-  check('菜单里只有子文件夹（范围已不在菜单里）', menuProbe.hasAllEntry === false && menuProbe.hasRootEntry === false, JSON.stringify(menuProbe))
+  check('菜单里只有子文件夹（范围不在菜单里）', menuProbe.hasAllEntry === false && menuProbe.hasRootEntry === false, JSON.stringify(menuProbe))
   check('菜单列出了全部子文件夹', menuProbe.folderRows === targetSubfolders, `菜单 ${menuProbe.folderRows} 行 / 目标 ${targetSubfolders} 个`)
 
-  // 范围开关已经删掉：工具条上没有这枚按钮，路径行也不再标「所有层级」。
-  const scopeGone = await ev(`(() => ({
-    toggle: document.getElementById('scopeToggle') === null,
-    badge: document.querySelector('#crumbs .crumb-scope') === null,
-    storage: localStorage.getItem('mv.scope'),
-  }))()`)
-  check('工具条上不再有范围开关', scopeGone.toggle === true, JSON.stringify(scopeGone))
-  check('路径行不再标「所有层级」', scopeGone.badge === true, JSON.stringify(scopeGone))
+  // 范围开关：工具条上独立的一枚，切换后路径行用标记说明当前范围。
+  const allState = await ev(`(async () => {
+    document.querySelector('.crumb-menu')?.remove()
+    const toggle = document.getElementById('scopeToggle')
+    const before = toggle.textContent
+    toggle.click()
+    await new Promise((r) => setTimeout(r, 2500))
+    return {
+      before,
+      after: toggle.textContent,
+      on: toggle.classList.contains('is-on'),
+      crumbs: document.getElementById('crumbs').textContent,
+      url: location.search,
+      cards: document.querySelectorAll('.card').length,
+      summary: document.getElementById('summary').textContent,
+      where: document.querySelectorAll('.card-where').length,
+      whereSample: document.querySelector('.card-where')?.textContent ?? '',
+      storage: localStorage.getItem('mv.scope'),
+    }
+  })()`)
+  console.log('范围开关探测:', JSON.stringify({ dirState, allState }))
+  check('「所有层级」进入递归视图', allState.summary.includes('含所有子目录'), JSON.stringify(allState))
+  check('递归视图留在当前目录', decodeURIComponent(allState.url).includes(targetKey), allState.url)
+  check('开关自己表示状态', allState.on === true && allState.after === '所有层级' && allState.before === '本层', JSON.stringify(allState))
+  check('路径行标出「所有层级」', allState.crumbs.includes('所有层级'), allState.crumbs)
+  check('递归模式标出了来源层级', allState.where > 0, `带路径标签的卡片 ${allState.where} 张，例：${allState.whereSample}`)
+
+  // 递归视图的出口：再按一次开关回到本层——只显示这一层的文件，路径行上的
+  // 范围标记消失，摘要不再说「含所有子目录」。
+  const rootOnly = await ev(`(async () => {
+    const toggle = document.getElementById('scopeToggle')
+    toggle.click()
+    await new Promise((r) => setTimeout(r, 2000))
+    return {
+      found: true,
+      on: toggle.classList.contains('is-on'),
+      crumbs: document.getElementById('crumbs').textContent,
+      summary: document.getElementById('summary').textContent,
+      cards: document.querySelectorAll('.card').length,
+      where: document.querySelectorAll('.card-where').length,
+      storage: localStorage.getItem('mv.scope'),
+    }
+  })()`)
+  console.log('范围开关回退探测:', JSON.stringify(rootOnly))
+  check('再按一次开关回到本层', rootOnly.on === false && rootOnly.storage === 'dir', JSON.stringify(rootOnly))
+  check('回本层后路径行不再标范围', rootOnly.crumbs.includes('所有层级') === false, rootOnly.crumbs)
+  check('回本层后摘要不再说含子目录', rootOnly.summary.includes('含所有子目录') === false, rootOnly.summary)
 
   // 只看视频 / 全部的开关。先显式点一下「只看视频」，不依赖前面留下的状态。
   const videoOnly = await ev(`(async () => {
@@ -421,113 +489,53 @@ try {
   })()`)
   check('卡片显示了时长', gotDuration === true, duration)
 
-  // ── 6. 分组：递归成一棵可折展的目录树 ──────────────────────────────────
-  await setUiState({ kinds: 'all', content: 'folder', atRoot: true })
-  check('分组模式渲染出分组', await waitFor('document.querySelectorAll(".folder-group").length > 0'))
-  check('分组里有卡片', await waitFor('document.querySelectorAll(".folder-group .card").length > 0', 30000))
-
-  const grouped = await ev(`(() => {
-    const groups = [...document.querySelectorAll('.folder-group')]
-    const withChild = groups.filter((g) => g.querySelector('.folder-group') !== null)
-    const firstChild = document.querySelector('.folder-group .folder-group')
+  // ── 6. 点卡片打开的是**这一条**（不是列表第一条） ──────────────────────
+  // 这条曾经真的坏过：卡片上存的是 state.media 里的下标，而不是这条媒体自己的
+  // key。凡是不在那个数组里的卡片（分组视图里懒加载出来的那些）下标必然落到 0，
+  // 于是「点哪个视频都播第一个」。现在统一按 key 打开，这里用第 2、3 张卡钉住它。
+  await setUiState({ scope: 'dir', kinds: 'video' })
+  await waitFor('document.querySelectorAll(".card-video").length > 2', 20000)
+  const openProbe = await ev(`(async () => {
+    const cards = [...document.querySelectorAll('.card-video')]
+    const read = async (card) => {
+      card.click()
+      await new Promise((r) => setTimeout(r, 1500))
+      const name = document.getElementById('playerName').textContent
+      document.getElementById('btnClose').click()
+      await new Promise((r) => setTimeout(r, 600))
+      return name
+    }
+    const first = cards[0].dataset.key
+    const second = cards[1].dataset.key
+    const firstOpened = await read(cards[0])
+    const secondOpened = await read(cards[1])
     return {
-      count: groups.length,
-      hasHeader: groups.every((g) => g.querySelector('.group-name') !== null),
-      hasTwisty: groups.every((g) => g.querySelector('.twisty') !== null),
-      hasTally: groups.every((g) => /^\\d+ 个$/.test(g.querySelector('.group-tally').textContent.trim())),
-      nested: withChild.length,
-      childIndented: firstChild === null ? null : firstChild.classList.contains('is-child'),
-      childHasOwnCards: firstChild === null ? null : firstChild.querySelectorAll('.card').length >= 0,
-      openAtStart: groups.filter((g) => g.querySelector('.group-body').hidden === false).length,
-      // 组头的数字是整棵子树的数量：根那一组必须不少于它自己的直接子组
-      rootTally: Number((groups[0]?.querySelector('.group-tally')?.textContent ?? '0').replace(/\\D/g, '')),
-      // 「展开 / 折叠」在工具条上、紧挨着「分组」按钮，不再单独占一行
-      expandHidden: document.getElementById('groupExpand').hidden,
-      collapseHidden: document.getElementById('groupCollapse').hidden,
-      // 数量只在摘要行说一次：工具条与分组块里都不该再出现统计文字
-      toolbarHasNumbers: /\\d/.test(document.querySelector('.toolbar-side')?.textContent ?? ''),
+      firstKey: first,
+      secondKey: second,
+      firstOpened,
+      secondOpened,
+      secondCardName: cards[1].querySelector('.card-name')?.textContent ?? '',
+      secondCardKey: cards[1].dataset.key,
     }
   })()`)
-  console.log('分组探测:', JSON.stringify(grouped))
-  check('分组都带组头与三角', grouped.hasHeader === true && grouped.hasTwisty === true)
-  check('分组都带媒体数', grouped.hasTally === true)
-  check('出现了嵌套的子分组', grouped.nested > 0, `${grouped.nested} 个带子组`)
-  check('嵌套的子分组带 is-child（缩进那条竖线）', grouped.childIndented === true)
-  check('默认只展开第一层', grouped.openAtStart > 0 && grouped.openAtStart < grouped.count, `展开 ${grouped.openAtStart} / 共 ${grouped.count}`)
-  check('组头统计的是整棵子树', grouped.rootTally > 0, `根组 ${grouped.rootTally}`)
-  check('分组模式下才显示展开 / 折叠', grouped.expandHidden === false && grouped.collapseHidden === false, JSON.stringify(grouped))
-  check('工具条上不再有第二处统计', grouped.toolbarHasNumbers === false, '工具条里出现了数字')
-  check('动作带只有展开 / 折叠两个按钮', JSON.stringify(grouped.barButtons) === JSON.stringify(['展开全部', '折叠全部']), JSON.stringify(grouped.barButtons))
-  check('动作带不重复报数量', grouped.barHasNumbers === false, '分组工具条里出现了数字')
-
-  // 折展：点组头把它收起来，再点一次展开。
-  const folding = await ev(`(async () => {
-    const head = document.querySelector('.folder-group .group-head')
-    const body = head.parentElement.querySelector('.group-body')
-    const before = body.hidden
-    head.click()
-    await new Promise((r) => setTimeout(r, 200))
-    const afterFirst = body.hidden
-    head.click()
-    await new Promise((r) => setTimeout(r, 200))
-    return { before, afterFirst, afterSecond: body.hidden, expanded: head.getAttribute('aria-expanded') }
-  })()`)
-  console.log('折展探测:', JSON.stringify(folding))
-  check('点组头能折起', folding.afterFirst === !folding.before, JSON.stringify(folding))
-  check('再点一次能展开', folding.afterSecond === folding.before, JSON.stringify(folding))
-
-  // 工具条上的展开全部 / 折叠全部
-  const bulk = await ev(`(async () => {
-    const read = () => [...document.querySelectorAll('.folder-group')].filter((g) => g.querySelector('.group-body').hidden === false).length
-    const total = document.querySelectorAll('.folder-group').length
-    document.getElementById('groupExpand').click()
-    await new Promise((r) => setTimeout(r, 400))
-    const expanded = read()
-    document.getElementById('groupCollapse').click()
-    await new Promise((r) => setTimeout(r, 400))
-    return { total, expanded, collapsed: read() }
-  })()`)
-  console.log('批量折展:', JSON.stringify(bulk))
-  check('「展开全部」把所有分组摊开', bulk.expanded === bulk.total, JSON.stringify(bulk))
-  check('「折叠全部」只剩根展开', bulk.collapsed === 1, JSON.stringify(bulk))
-
-  // 三个内容模式要能来回切：分组 → 全部 → 当前
-  await ev(`document.querySelector('[data-content-btn="all"]').click()`)
-  await sleep(800)
-  const allMode = await ev(`(() => ({
-    active: document.querySelector('[data-content-btn="all"]').classList.contains('is-active'),
-    groups: document.querySelectorAll('.folder-group').length,
-    cards: document.querySelectorAll('.card').length,
-    summary: document.getElementById('summary').textContent,
-  }))()`)
-  check('「全部」是平铺（没有分组）', allMode.active === true && allMode.groups === 0, JSON.stringify(allMode))
-  check('「全部」列出了递归内容', allMode.cards > 0 && allMode.summary.includes('含所有子目录'), JSON.stringify(allMode))
-
-  await ev(`document.querySelector('[data-content-btn="current"]').click()`)
-  await sleep(800)
-  const currentMode = await ev(`(() => ({
-    active: document.querySelector('[data-content-btn="current"]').classList.contains('is-active'),
-    groups: document.querySelectorAll('.folder-group').length,
-    cards: document.querySelectorAll('.card').length,
-    summary: document.getElementById('summary').textContent,
-  }))()`)
-  check('「当前」回到平铺且不含子目录', currentMode.active === true && currentMode.groups === 0 && currentMode.summary.includes('含所有子目录') === false, JSON.stringify(currentMode))
+  console.log('打开探测:', JSON.stringify(openProbe))
+  check('第二张卡打开的确实是它自己', openProbe.secondOpened === openProbe.secondCardName, `打开「${openProbe.secondOpened}」/ 卡片「${openProbe.secondCardName}」`)
+  check('第二张卡没有落到第一张上', openProbe.secondOpened !== openProbe.firstOpened || openProbe.firstKey === openProbe.secondKey, JSON.stringify(openProbe))
 
   // ── 7. 悬停播放小动画 ──────────────────────────────────────────────────
-  await ev(`document.querySelector('[data-content-btn="folder"]').click()`)
-  await waitFor('document.querySelectorAll(".folder-group .card-video").length > 0', 30000)
+  await waitFor('document.querySelectorAll(".card-video").length > 0', 20000)
   const previewAvailable = await ev(`fetch('/reel/api/session').then((r) => r.json()).then((j) => j.capabilities.previews === true)`)
   if (previewAvailable === true) {
     // 卡片可能在视口下方——先把目标滚进视野，否则鼠标事件打不到它
     // （elementFromPoint 会是 null，pointerenter 永远不会触发）。
     await ev(`(() => {
-      const media = document.querySelector('.folder-group .card-video .card-media')
+      const media = document.querySelector('.card-video .card-media')
       media.scrollIntoView({ block: 'center' })
       return true
     })()`)
     await sleep(400)
     const box = await ev(`(() => {
-      const media = document.querySelector('.folder-group .card-video .card-media')
+      const media = document.querySelector('.card-video .card-media')
       const r = media.getBoundingClientRect()
       return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }
     })()`)
@@ -542,7 +550,7 @@ try {
     // 记录卡片容器收到过的指针事件，判断到底是没触发还是没生成。
     await ev(`(() => {
       window.__ptr = []
-      const media = document.querySelector('.folder-group .card-video .card-media')
+      const media = document.querySelector('.card-video .card-media')
       for (const type of ['pointerenter', 'pointerover', 'pointerleave', 'mouseenter']) {
         media.addEventListener(type, (e) => window.__ptr.push(type + ':' + e.pointerType))
       }
@@ -552,7 +560,7 @@ try {
     const appeared = await waitFor('document.querySelector(".card-preview") !== null', 25000)
     const ptrLog = await ev('JSON.stringify(window.__ptr ?? [])')
     const hoverState = await ev(`(() => {
-      const media = document.querySelector('.folder-group .card-video .card-media')
+      const media = document.querySelector('.card-video .card-media')
       return {
         boxAtPointer: media === null ? null : (() => { const r = media.getBoundingClientRect(); return Math.round(r.left) + ',' + Math.round(r.top) + ' ' + Math.round(r.width) + 'x' + Math.round(r.height) })(),
         elementAtPointer: document.elementFromPoint(${box.x}, ${box.y})?.className ?? '(null)',
@@ -591,7 +599,7 @@ try {
     console.log('  服务端没有 ffmpeg，跳过悬停动画断言')
   }
 
-  // ── 8. 折叠可恢复 + 递归分组 + 静默续页 ────────────────────────────────
+  // ── 8. 折叠可恢复 + 递归范围 + 静默续页 ────────────────────────────────
   // 收起来之后必须有可点的入口，否则用户看到的现象就是「根本没有侧边栏」。
   await ev(`document.getElementById('collapseSidebar').click()`)
   await sleep(300)
@@ -627,26 +635,20 @@ try {
   }))()`)
   check('刷新后目录栏默认展开', afterReload.collapsed === false && afterReload.width >= 200, JSON.stringify(afterReload))
 
-  // 分组在**根目录**上也要成立：这一层子目录最多，嵌套也最深。
-  await clickCrumbRootEntry()
-  await ev(`document.querySelector('[data-content-btn="folder"]').click()`)
-  check('根目录分组渲染出分组', (await waitFor('document.querySelectorAll(".folder-group").length > 0', 20000)) === true)
-  const groupedAll = await ev(`(() => {
-    const groups = [...document.querySelectorAll('.folder-group')]
-    return {
-      groups: groups.length,
-      innerCards: groups.reduce((sum, g) => sum + g.querySelectorAll('.card').length, 0),
-      nested: groups.filter((g) => g.querySelector('.folder-group') !== null).length,
-      summary: document.getElementById('summary').textContent,
-    }
-  })()`)
-  console.log('根目录分组:', JSON.stringify(groupedAll))
-  check('根目录分组铺出了卡片', groupedAll.innerCards > 0, `${groupedAll.innerCards} 张`)
-  check('根目录分组有嵌套', groupedAll.nested > 0, JSON.stringify(groupedAll))
-  check('摘要说明这是含子目录的数量', groupedAll.summary.includes('含所有子目录'), groupedAll.summary)
+  // 递归范围下卡片照样渲染（范围只换数据来源，不改渲染方式）。
+  // 通过工具条上的范围开关进入所有层级。
+  await enterAllLevels()
+  await waitFor('document.querySelectorAll(".card").length > 0')
+  const recursive = await ev(`(() => ({
+    summary: document.getElementById('summary').textContent,
+    cards: document.querySelectorAll('.card').length,
+    where: document.querySelectorAll('.card-where').length,
+  }))()`)
+  console.log('递归范围:', JSON.stringify(recursive))
+  check('递归范围下列出了卡片', recursive.cards > 0, JSON.stringify(recursive))
+  check('递归范围标出了来源层级', recursive.where > 0, JSON.stringify(recursive))
 
   // 静默续页：不该再有需要点的按钮（这一层不足一页时，连哨兵都不该有）。
-  await ev(`document.querySelector('[data-content-btn="current"]').click()`)
   await sleep(500)
   const paging = await ev(`(() => {
     const more = document.getElementById('more')
@@ -833,8 +835,12 @@ try {
   const samples = await ev(`(async () => {
     const seen = { loadingEl: 0, spinnerEls: 0, pendingClass: 0, spinnerText: 0, samples: 0 }
     document.querySelector('.crumb-menu')?.remove()
-    // 触发一次真实的重新载入（刷新按钮），采样整个过程里有没有加载指示。
-    document.getElementById('refreshBtn').click()
+    const toggle = document.getElementById('scopeToggle')
+    if (toggle.classList.contains('is-on')) {
+      toggle.click()
+      await new Promise((r) => setTimeout(r, 1200))
+    }
+    toggle.click()
     const deadline = Date.now() + 3000
     while (Date.now() < deadline) {
       seen.samples += 1
@@ -856,7 +862,7 @@ try {
   check('播放器自己的转圈还在', (await ev(`document.getElementById('playerSpinner') !== null`)) === true)
 
   // ── 11. 目录栏手感：滚动保持 + 键盘导航 + 不可选中 ─────────────────────
-  await setUiState({ kinds: 'video', content: 'current', atRoot: true })
+  await setUiState({ scope: 'dir', kinds: 'video', group: 'flat' })
 
   // 滚到中间，然后触发一次**不改变树高**的重画（切排序），滚动位置必须留在原处。
   const scrollKeep = await ev(`(async () => {
@@ -879,7 +885,7 @@ try {
     const heightAfterTwisty = tree.scrollHeight
 
     // 再测一次「点一行目录触发整页重画」：点行会走 navigate → renderAll → renderTree，
-    // 树的形状（根｜范围｜分组）没变，所以位置必须原地不动。
+    // 树的形状（根｜范围）没变，所以位置必须原地不动。
     //
     // 早先这里点的是行尾的 ›（只 navigate，不重画树），于是整段测量其实什么都没测到，
     // 断言还长期失败；渲染日志里显示那一次点击根本没有重画记录，就是这么发现的。

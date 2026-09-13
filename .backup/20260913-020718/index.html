@@ -61,7 +61,8 @@
         <!--
           路径行在工具条同一行上：左边回答「我在哪、怎么上去」，右边是那排按钮。
           点任何一级名字 = 直接进那一层，「▾」只负责展开这一级的子文件夹——两个
-          动作各有各的按钮，不再共用一个弹出菜单。
+          动作各有各的按钮，不再共用一个弹出菜单。范围（本层 / 所有层级）是右边
+          那枚独立开关，不在这条路径上。
         -->
         <nav class="pathbar" aria-label="当前位置">
           <button type="button" class="path-up" id="crumbUp" title="返回上一级 (Backspace)" aria-label="返回上一级">‹</button>
@@ -69,14 +70,6 @@
         </nav>
         <div class="toolbar-side">
           <div class="modes modes-sm" role="group" aria-label="列出内容">
-            <button type="button" class="mode-btn is-active" data-content-btn="current" title="只列当前这一层的文件，平铺">当前</button>
-            <button type="button" class="mode-btn" data-content-btn="all" title="递归列出这个目录及其所有子目录的文件，平铺成一屏">全部</button>
-            <button type="button" class="mode-btn" data-content-btn="folder" title="递归列出整个子树，按目录分组，每组可折叠">分组</button>
-            <!-- 只属于「分组」的两个动作：跟着它自己那一组，别再单独占一行。 -->
-            <button type="button" class="mode-btn mode-mini" id="groupExpand" title="展开所有分组" hidden>展开</button>
-            <button type="button" class="mode-btn mode-mini" id="groupCollapse" title="折叠所有分组，只留第一层" hidden>折叠</button>
-          </div>
-          <div class="modes modes-sm" role="group" aria-label="图片 / 视频">
             <button type="button" class="mode-btn is-active" data-kind-btn="all" title="图片和视频都显示">全部</button>
             <button type="button" class="mode-btn" data-kind-btn="video" title="只显示视频">视频</button>
             <button type="button" class="mode-btn" data-kind-btn="image" title="只显示图片">图片</button>
@@ -85,6 +78,7 @@
             <button type="button" class="mode-btn is-active" data-view-btn="grid" title="网格视图 (V 切换)">网格</button>
             <button type="button" class="mode-btn" data-view-btn="list" title="列表视图 (V 切换)">列表</button>
           </div>
+          <button type="button" class="icon-btn" id="scopeToggle" title="列出范围 (A 切换)" aria-label="列出范围" aria-pressed="false">本层</button>
           <button type="button" class="icon-btn" id="sortToggle" title="切换排序 (S)" aria-label="切换排序">
             <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5h12v2H4zM4 9h8v2H4zM4 13h5v2H4z"/></svg>
           </button>

@@ -26,8 +26,7 @@
     tree: $('tree'),
     crumbs: $('crumbs'),
     crumbUp: $('crumbUp'),
-    groupExpand: $('groupExpand'),
-    groupCollapse: $('groupCollapse'),
+    scopeToggle: $('scopeToggle'),
     summary: $('summary'),
     grid: $('grid'),
     content: $('content'),
@@ -64,11 +63,6 @@
   const state = {
     /** 会话信息：可用根目录与能力位。 */
     session: null,
-    /**
-     * 面板：`browse`（列表模式）或 `feed`（刷视频模式）。和下面那个 `mode` 是两件
-     * 不同的事——这里是「用哪种方式看」，那里是「列出哪些内容」。
-     */
-    pane: 'browse',
     /** 当前模式的目录键；'' 表示第一个根目录。 */
     key: '',
     /** 列表模式数据。 */
@@ -86,39 +80,19 @@
     sort: localStorage.getItem('mv.sort') ?? 'new',
     /** 视图：grid / list。 */
     view: localStorage.getItem('mv.view') ?? 'grid',
-    /** 列出内容：all（图片+视频）、video（只看视频）或 image（只看图片）。 */
+    /** 列出范围：dir（当前这一层）或 all（递归所有层级，且不显示文件夹）。
+        工具条上有一枚独立开关（#scopeToggle），切换目录不会把它关掉——
+        它和「分组」「视图」一样，是用户选的看片方式，不是一次性的导航参数。 */
+    scope: localStorage.getItem('mv.scope') ?? 'dir',
+    /** 列出内容：all（图片+视频）或 video（只看视频）。 */
     kinds: localStorage.getItem('mv.kinds') ?? 'all',
-    /** 递归扫描结果，按目录键缓存（「全部」和「分组」共用同一份）。 */
+    /** all 模式的递归扫描结果，按扫描出的条目缓存。 */
     scanned: [],
     scannedKey: null,
     scannedTruncated: false,
-    /**
-     * 内容模式，三选一：
-     *  · `current` —— 当前这一层的文件，平铺；
-     *  · `all`     —— 递归整棵子树，平铺成一屏；
-     *  · `folder`  —— 递归整棵子树，按目录分成**可折展的嵌套分组**。
-     *
-     * 旧版本这里是 `mv.group`（flat / folder）：那时「递归」还挂在另一枚范围
-     * 开关上，两者是正交的。现在合成一个三选一，所以顺手把老值迁过来——选过
-     * 「分组」的人打开就是分组，其余人回到「当前」。
-     */
-    mode: readMode(),
-    /** 刷取范围（刷视频模式）：folder（当前目录递归）或 root（整棵根目录）。 */
+    /** 刷取范围：folder（当前目录递归）或 root（整棵根目录）。 */
     feedScope: localStorage.getItem('mv.feedScope') ?? 'folder',
   }
-
-  /** 读回内容模式，并把旧的 `mv.group` 迁进来。 */
-  function readMode() {
-    const saved = localStorage.getItem('mv.mode')
-    if (saved === 'current' || saved === 'all' || saved === 'folder') return saved
-    const legacy = localStorage.getItem('mv.group')
-    localStorage.removeItem('mv.group')
-    return legacy === 'folder' ? 'folder' : 'current'
-  }
-
-  /** 「库」的目录键：所有配置目录的聚合视图，也是服务端认识的同一个键。 */
-  const LIBRARY_KEY = 'lib'
-  const isLibraryKey = (key) => String(key ?? '') === LIBRARY_KEY
 
   /** 根目录键（'' → 第一个根）。 */
   const rootKeyOf = (key) => String(key ?? '').replace(/^r(\d+).*$/, 'r$1')
@@ -126,19 +100,6 @@
   const currentRoot = () => {
     const index = Number(rootKeyOf(state.key).slice(1)) || 0
     return state.session?.roots?.find((item) => item.index === index) ?? state.session?.roots?.[0] ?? null
-  }
-
-  /**
-   * 库是一个整体，没有「这一层」：选中它时把内容模式从「当前」升级为「全部」。
-   *
-   * 「当前」在库里的字面含义是「每个根目录这一层」，那几乎没有内容，而用户点
-   * 「库」想看的就是全部。升级会写进 localStorage —— 从库再点回某个根目录时
-   * 「全部」继续生效，那也正是用户刚才在看的东西。
-   */
-  const ensureLibraryMode = () => {
-    if (!isLibraryKey(state.key) || state.mode !== 'current') return
-    state.mode = 'all'
-    localStorage.setItem('mv.mode', state.mode)
   }
 
   // ── 网络 ────────────────────────────────────────────────────────────────
@@ -212,7 +173,11 @@
   let crumbsExpanded = false
 
   /**
-   * 载入当前目录：这一层的文件 + 子文件夹，以及画路径行要用的根信息。
+   * 载入当前目录。
+   *
+   * 两个范围共用同一次载入：`dir` 取这一层（文件 + 文件夹），`all` 递归取
+   * 所有层级（只要文件）。两者都先拿一次 `list`，因为递归模式也需要它来画
+   * 面包屑和根目录信息。
    */
   const loadListing = async () => {
     const payload = await guard('载入目录', async () => {
@@ -234,25 +199,26 @@
     // 每层的直接子文件夹顺手进缓存：面包屑的下拉菜单要用，导航过的层
     // 再打开菜单就是零请求。
     crumbFoldersCache.set(state.key, payload.folders ?? [])
-    // 「全部 / 分组」要先有递归结果才画得出东西。
-    if (state.mode !== 'current') await loadRecursive(state.key)
-    // 换了目录，分组视图回到「根 + 直接子目录展开」的默认形态：上一棵树的
-    // 折展记录对新目录没有意义（键都不一样，留着只会让新树莫名全开着）。
-    groupTouched = false
-    groupOpen.clear()
+    if (state.scope === 'all') {
+      await loadScanned(payload.key)
+    } else {
+      state.scanned = []
+      state.scannedKey = null
+      state.scannedTruncated = false
+    }
     recomputeMedia()
     renderAll()
   }
 
   /**
-   * 递归读这个目录下的全部媒体。
+   * 递归取这个目录下的所有文件。
    *
-   * 「全部」和「分组」是同一份数据的两种画法，所以只扫一次、按目录键缓存。
-   * 上限由服务端兜住，超出时带 `truncated` 回来，摘要里会说明。
+   * 只在这一个模式下发生，并且按 key 缓存：在「本目录 / 全部」之间来回切
+   * 不会重复扫盘。扫描上限由服务端约束，超出时返回截断标记。
    *
    * @param {string} key - 要递归扫描的目录键。
    */
-  const loadRecursive = async (key) => {
+  const loadScanned = async (key) => {
     if (state.scannedKey === key && state.scanned.length > 0) return
     const payload = await guard('扫描子目录', async () => {
       const result = await api(`/api/scan?k=${encodeURIComponent(key)}&kinds=image,video,audio&limit=3000&depth=24`)
@@ -265,14 +231,9 @@
     state.scannedTruncated = payload.truncated === true
   }
 
-  /**
-   * 过滤 + 排序出当前要画的媒体列表。
-   *
-   * @param {object[]} [pool] - 只在这一份里筛（分组视图按目录分别调用）；
-   *   不传就用当前模式的整份来源。
-   */
-  const computeMedia = (pool) => {
-    const source = pool ?? (state.mode === 'current' ? state.listing?.files ?? [] : state.scanned)
+  /** 过滤 + 排序出当前要画的媒体列表。 */
+  const recomputeMedia = () => {
+    const source = state.scope === 'all' ? state.scanned : state.listing?.files ?? []
     const needle = state.filter.trim().toLowerCase()
     const byKind =
       state.kinds === 'video'
@@ -281,12 +242,7 @@
           ? source.filter((item) => item.kind === 'image')
           : source.filter((item) => item.kind === 'image' || item.kind === 'video' || item.kind === 'audio')
     const filtered = needle === '' ? byKind : byKind.filter((item) => String(item.name).toLowerCase().includes(needle))
-    return filtered.slice().sort(comparators[state.sort] ?? comparators.new)
-  }
-
-  /** 当前模式下的整份媒体列表（网格、「全部」模式都读它）。 */
-  const recomputeMedia = () => {
-    state.media = computeMedia()
+    state.media = filtered.slice().sort(comparators[state.sort] ?? comparators.new)
   }
 
   /**
@@ -294,21 +250,15 @@
    *
    * **不含目录树。** 目录树和右边这个列表是两件独立的事：树只在「配置的目录
    * 变了」时建一次，之后只有折展和高亮会动它。早先这里调了 renderTree()，于是
-   * 右边每加载一次列表（切目录、翻页）就顺带重画一遍左树——用户看到的
+   * 右边每加载一次列表（切目录、切范围、翻页）就顺带重画一遍左树——用户看到的
    * 就是「左边的树随着右边的列表一起在加载」。树的加载由它自己的入口负责：
    * 根建好时各拉一次自己的子目录，此后不再自动重来。
    */
-  /** 搜索框在库里筛的是整个库，在目录里筛的是当前目录。 */
-  const syncSearchPlaceholder = () => {
-    el.search.placeholder = isLibraryKey(state.key) ? '筛选整个库（名称）' : '筛选当前目录（名称）'
-  }
-
   const renderAll = () => {
     renderCrumbs()
     renderSummary()
     renderGrid()
     renderMore()
-    syncSearchPlaceholder()
     // 只有「当前目录是哪一行」需要跟着导航走，那是一个 class。
     syncTreeActive()
   }
@@ -332,6 +282,8 @@
    * 永远直给——它们是「我大概在哪」和「我怎么回去」。中间的层级折成一枚
    * 「…」，悬停是完整路径，点一下摊开；这一枚同时是深路径的兜底出口，所以
    * 路径行永远不会换行，吸顶容器的高度也就不会随路径深度跳。
+   *
+   * 范围（本层 / 所有层级）不在这条线上：它是工具条上的独立开关，这里是路径。
    */
   const renderCrumbs = () => {
     clear(el.crumbs)
@@ -373,8 +325,7 @@
       if (isRoot) {
         const icon = document.createElement('span')
         icon.className = 'crumb-ico'
-        // 库不是文件系统里的房子：给它自己的书堆图标。
-        icon.textContent = crumb.key === LIBRARY_KEY ? '📚' : '⌂'
+        icon.textContent = '⌂'
         icon.setAttribute('aria-hidden', 'true')
         node.appendChild(icon)
       }
@@ -610,7 +561,8 @@
    * 点「▾」弹出的菜单：**只有子文件夹**。
    *
    * 菜单里只放「从这一级往下走」：挑一个子文件夹进去。导航（去这一层、回根、
-   * 回上一级）已经在路径行上了，菜单里再来一遍就是同一件事画两处。
+   * 回上一级）已经在路径行上了，范围（本层 / 所有层级）在工具条那枚开关上，
+   * 菜单里再来一遍就是同一件事画三处。
    *
    * @param {HTMLElement} anchor - 这一级的「▾」按钮。
    * @param {{name: string, key: string}} crumb - 这一级面包屑。
@@ -640,13 +592,7 @@
     fillMenuWithFolders(view, folders, crumb.name, { host })
   }
 
-  /**
-   * 摘要行：把「列出范围 / 数量 / 筛选 / 排序」讲成一句话。
-   *
-   * 这里是**唯一**说数量的地方。分组视图原本另有一条统计条也在报总数，两条
-   * 并排出现时数字还不一样（一条是筛选后的、一条是原始的），看着像打架——所以
-   * 分组那边只留「展开全部 / 折叠全部」两个动作，不再报数。
-   */
+  /** 摘要行：把当前范围 / 数量 / 筛选 / 排序讲成一句话。 */
   const renderSummary = () => {
     const listing = state.listing
     if (listing === null) {
@@ -654,12 +600,12 @@
       return
     }
     const parts = []
-    if (state.mode === 'current') {
+    if (state.scope === 'all') {
+      parts.push(`${state.media.length} 个${kindLabel()}（含所有子目录）`)
+      if (state.scannedTruncated) parts.push('已达上限，仅显示一部分')
+    } else {
       parts.push(`${listing.folders?.length ?? 0} 个文件夹`)
       parts.push(`${state.kinds === 'video' ? listing.files?.filter((item) => item.kind === 'video').length ?? 0 : state.kinds === 'image' ? listing.files?.filter((item) => item.kind === 'image').length ?? 0 : listing.fileCount} 个${kindLabel()}`)
-    } else {
-      parts.push(`${state.media.length} 个${kindLabel()}（含所有子目录）`)
-      if (state.scannedTruncated) parts.push('已达扫描上限，只列出一部分')
     }
     if (state.filter.trim() !== '') parts.push(`筛选出 ${state.media.length} 个`)
     parts.push(`排序：${sortLabel[state.sort] ?? state.sort}`)
@@ -742,39 +688,18 @@
   }
 
   /**
-   * 见过面的条目，按 key 存一份。
-   *
-   * 为什么需要：分组视图里的卡片是**单独**把每个子目录拉回来画的，这些条目
-   * 不在 `state.media` 里。而「点开谁」现在只认卡片上的 key——没有这张表，
-   * 那些 key 就查不到条目，点开又会退回列表第一条（这正是原来那个 bug 的
-   * 另一面）。表很小（一个条目就是服务端给的那个对象），并且有上限保护。
-   */
-  const itemByKey = new Map()
-
-  /** 记下一个画过卡片的条目。 */
-  const rememberItem = (item) => {
-    if (item === null || typeof item !== 'object' || typeof item.key !== 'string') return
-    if (itemByKey.size > 8000) itemByKey.clear()
-    itemByKey.set(item.key, item)
-  }
-
-  /**
    * 媒体卡片：图片直接懒加载，视频先显示元数据徽标。
    *
    * 卡片只认 key，**不认下标**。曾经这里存的是 `state.media` 里的位置、点击时
-   * 再拿它回查 `state.media[下标]`；分组视图里那些懒加载出来的卡片根本不在
-   * `state.media` 里，下标算不出来就兜底成 0，于是「点哪个视频都播第一个」。
-   * key 是这条媒体自己的身份，不存在这个问题。
+   * 再拿它回查 `state.media[下标]`，而懒加载 / 分块渲染之后卡片与数组下标本来
+   * 就对不上号——算不出来就兜底成 0，于是点哪个视频都播列表第一条。key 是这条
+   * 媒体自己的身份，不存在这个问题。
    *
    * @param {object} item - 这一条媒体（服务端给的条目）。
-   * @param {{compact?: boolean, where?: string}} [options] - compact: 用在更紧凑的容器里；
-   *   where: 卡片来自哪个目录（分组视图传，卡片上标一行来源路径）。
    */
-  const buildCard = (item, options = {}) => {
-    const compact = options.compact === true
-    rememberItem(item)
+  const buildCard = (item) => {
     const card = document.createElement('article')
-    card.className = `card card-${item.kind}${compact ? ' is-compact' : ''}`
+    card.className = `card card-${item.kind}`
     card.dataset.key = item.key
     card.tabIndex = 0
 
@@ -833,19 +758,21 @@
     meta.className = 'card-meta'
     meta.textContent = `${fmtBytes(item.size)} · ${new Date(item.mtimeMs).toLocaleString()}`
     info.append(name, meta)
-    // 分组视图里卡片嵌在目录分组内，来源路径只能靠组头表达；但一组里也可能混着
-    // 更深的目录（嵌套折叠时看不清在哪一级），所以这一行照旧标出来，点它跳过去。
-    const where = typeof options.where === 'string' && options.where !== '' ? options.where : null
-    if (where !== null) {
-      const node = document.createElement('div')
-      node.className = 'card-where'
-      node.textContent = where
-      node.title = where
-      node.addEventListener('click', (event) => {
-        event.stopPropagation()
-        navigate(`r${item.root}/${where.split('/').map(encodeURIComponent).join('/')}`)
-      })
-      info.appendChild(node)
+
+    // 递归模式下列表是混在一起的，必须告诉用户这是哪一层来的文件。
+    if (state.scope === 'all') {
+      const parent = String(item.rel).split('/').slice(0, -1).join('/')
+      if (parent !== '') {
+        const where = document.createElement('div')
+        where.className = 'card-where'
+        where.textContent = parent
+        where.title = parent
+        where.addEventListener('click', (event) => {
+          event.stopPropagation()
+          navigate(`r${item.root}/${parent.split('/').map(encodeURIComponent).join('/')}`)
+        })
+        info.appendChild(where)
+      }
     }
     card.appendChild(info)
 
@@ -941,15 +868,6 @@
 
   /** 指针要停多久才开始请求（毫秒）。 */
   const HOVER_PREVIEW_DELAY = 350
-
-  // ── 分组卡片的加载参数 ───────────────────────────────────────────────────
-  //
-  // 组内的网格和平铺用同一套列宽（--tile）：曾经试过「文件少 → 列宽大」的
-  // 自适应，结果一个文件、几个文件、一堆文件的文件夹各长各样，用户点名嫌
-  // 乱。统一之后组与组之间只有「卡片的多少」这一个变量。
-
-  /** 同时读取几个分组的内容。 */
-  const GROUP_LOAD_CONCURRENCY = 4
 
   /** 静默续页的哨兵观察者。 */
   let moreSentinel = null
@@ -1116,9 +1034,8 @@
   const renderFlatGrid = (host = el.grid) => {
     el.empty.hidden = state.media.length > 0 || state.listing === null
     if (!el.empty.hidden) {
-      el.empty.querySelector('.empty-title').textContent = isLibraryKey(state.key)
-        ? `库里没有${kindLabel()}`
-        : `这个目录里没有${kindLabel()}`
+      const where = state.scope === 'all' ? '这个目录及其所有子目录里' : '这个目录里'
+      el.empty.querySelector('.empty-title').textContent = `${where}没有${kindLabel()}`
     }
     teardownChunks()
     ensureChunkObserver()
@@ -1127,311 +1044,8 @@
     }
   }
 
-  // ── 分组视图：递归 + 可折展 ──────────────────────────────────────────────
-  //
-  // 「分组」= 把递归扫到的整棵子树按目录摊开：一个目录一个分组，目录里还有
-  // 子目录就**嵌在里面**，任意一层都能折起来。
-  //
-  // 一个分组的信息都在组头那一行：三角、图标、目录名、媒体数。**点组头折展**，
-  // 组头右边的「打开 ›」才是「进这个目录」——折展和导航是两件事，早先把它们压
-  // 在同一个点击上，两边都别扭。
-
   /**
-   * 用户手动动过折展没有。
-   *
-   * 动过之后一律听用户的；没动过则每次重画都给「根 + 直接子目录展开」的默认
-   * 视图。用「动过没有」而不是「集合空不空」来判断，是因为「折叠全部」正好会
-   * 把集合清空——按后者判断的话，用户一折起全部，下一次重画又全给展开了。
-   */
-  let groupTouched = false
-  /** 用户显式折起来的目录键（在 treeOpen 之外单独记，因为默认值与它无关）。 */
-  const groupOpen = new Set()
-
-  /**
-   * 把递归扫到的条目按目录拼成一棵树。
-   *
-   * 只有文件的层级也会出现：扫描结果平铺地给出每条文件的 `rel`，沿路径逐级建
-   * 节点，中间目录自然就长出来了。空目录不出现——没有文件就没有路径，这正是
-   * 分组视图该有的样子。
-   *
-   * @param {object[]} items - 扫描结果（每条带 rel）。
-   * @param {string} baseKey - 当前目录的键，作为树的根。
-   * @param {string} baseName - 当前目录的名字（根节点的显示名）。
-   * @returns {{key: string, name: string, rel: string, files: object[], children: object[], total: number, depth: number}} 树的根。
-   */
-  const buildFolderTree = (items, baseKey, baseName) => {
-    const baseRel = state.key === '' ? '' : String(state.listing?.rel ?? '')
-    const root = { key: baseKey, name: baseName, rel: baseRel, files: [], children: [], total: 0, depth: 0 }
-    /** rel（相对**根**的目录路径）→ 节点；根自己的 rel 是 baseRel。 */
-    const nodes = new Map([[baseRel, root]])
-
-    /**
-     * 建出这条路径上的目录节点，返回最末一级。
-     *
-     * @param {string} rel - 相对根的目录路径（baseRel 代表根自己）。
-     * @returns {object} 该目录的节点。
-     */
-    const ensure = (rel) => {
-      if (rel === baseRel) return root
-      const hit = nodes.get(rel)
-      if (hit !== undefined) return hit
-      const parts = rel.split('/')
-      const name = parts[parts.length - 1]
-      const parent = ensure(parts.slice(0, -1).join('/'))
-      const node = {
-        // 键就是父键 + 这一级目录名，和服务端的 keyFor 同构。
-        key: `${parent.key}/${encodeURIComponent(name)}`,
-        name,
-        rel,
-        files: [],
-        children: [],
-        total: 0,
-        depth: parent.depth + 1,
-      }
-      parent.children.push(node)
-      nodes.set(rel, node)
-      return node
-    }
-
-    for (const item of items) {
-      const parentRel = String(item.rel ?? '').split('/').slice(0, -1).join('/')
-      ensure(parentRel === baseRel || parentRel.startsWith(baseRel === '' ? '' : `${baseRel}/`) ? parentRel : baseRel)
-        .files.push(item)
-    }
-
-    // 自底向上累计：组头的「N 个」是**整棵子树**的数量，不是这一层的。
-    const tally = (node) => {
-      node.total = node.files.length
-      for (const child of node.children) node.total += tally(child)
-      return node.total
-    }
-    tally(root)
-    // 同级按名字排，读起来和左侧目录树一致。
-    const sortTree = (node) => {
-      node.children.sort((left, right) => left.name.localeCompare(right.name, 'zh-Hans-CN', { numeric: true }))
-      for (const child of node.children) sortTree(child)
-    }
-    sortTree(root)
-    return root
-  }
-
-  /**
-   * 库视图的分组树：第一层是各配置目录，它们下面才是各自的子树。
-   *
-   * 不能把整份扫描结果直接丢给 buildFolderTree：那棵树是「当前目录之下」的
-   * 形状，键从当前目录拼出来；而库里的条目分属不同的根，键必须保持
-   * `r<index>/…`，点「打开 ›」才会跳到对的目录。所以先按条目自带的 root 分回
-   * 各自的根，每个根单独建一棵树，再挂到虚拟的「库」根下——键因此天然正确。
-   *
-   * @returns {object} 库的分组树根。
-   */
-  const buildLibraryTree = () => {
-    const root = { key: LIBRARY_KEY, name: '库', rel: '', files: [], children: [], total: 0, depth: 0 }
-    const byRoot = new Map()
-    for (const item of state.scanned) {
-      const index = Number(item.root)
-      const list = byRoot.get(index)
-      if (list === undefined) byRoot.set(index, [item])
-      else list.push(item)
-    }
-    // 子树的 depth 从 0 起算，挂到库下之后整体 +1（组头的缩进与图标读它）。
-    const deepen = (node) => {
-      node.depth += 1
-      for (const child of node.children) deepen(child)
-    }
-    for (const record of state.session?.roots ?? []) {
-      const items = byRoot.get(record.index)
-      if (items === undefined || items.length === 0) continue
-      const child = buildFolderTree(items, `r${record.index}`, record.label)
-      deepen(child)
-      root.children.push(child)
-    }
-    root.total = root.children.reduce((sum, child) => sum + child.total, 0)
-    return root
-  }
-
-  /** 树里所有分组的键（「展开全部」用）。 */
-  const allGroupKeys = (node) => [node.key, ...node.children.flatMap((child) => allGroupKeys(child))]
-
-  /**
-   * 默认展开哪些分组：根 + 它的直接子目录。
-   *
-   * 一进来就该看见当前目录和它每个子目录的内容；再深的先折着——一个深目录全
-   * 摊开就是几千张图同时进解码管线，那正是这个视图最容易卡死的地方。
-   *
-   * @param {object} tree - buildFolderTree 的节点。
-   * @returns {Set<string>} 默认展开的键。
-   */
-  const defaultOpenGroups = (tree) => new Set([tree.key, ...tree.children.map((child) => child.key)])
-
-  /**
-   * 画一个分组节点（递归）。
-   *
-   * @param {object} node - buildFolderTree 的节点。
-   * @param {Set<string>} open - 当前应该展开的键集合。
-   * @returns {HTMLElement|null} 分组元素；这个目录和它的子目录都没有媒体时返回 null。
-   */
-  const buildGroup = (node, open) => {
-    if (node.total === 0) return null
-    const isOpen = open.has(node.key)
-
-    const group = document.createElement('section')
-    group.className = `folder-group${node.depth > 0 ? ' is-child' : ''}`
-    group.dataset.key = node.key
-
-    const head = document.createElement('header')
-    head.className = 'group-head'
-    head.tabIndex = 0
-    head.setAttribute('role', 'button')
-    head.setAttribute('aria-expanded', String(isOpen))
-
-    const twisty = document.createElement('span')
-    twisty.className = 'twisty'
-    twisty.textContent = isOpen ? '▾' : '▸'
-    twisty.setAttribute('aria-hidden', 'true')
-
-    const icon = document.createElement('span')
-    icon.className = 'ico'
-    icon.textContent = node.depth === 0 ? '⌂' : '📁'
-
-    const label = document.createElement('span')
-    label.className = 'group-name'
-    label.textContent = node.name
-    label.title = node.rel === '' ? node.name : node.rel
-
-    const tally = document.createElement('span')
-    tally.className = 'group-tally'
-    tally.textContent = `${node.total} 个`
-
-    const opener = document.createElement('button')
-    opener.type = 'button'
-    opener.className = 'group-open'
-    opener.textContent = '打开 ›'
-    opener.title = `进入 ${node.name}`
-    opener.addEventListener('click', (event) => {
-      event.stopPropagation()
-      navigate(node.key)
-    })
-
-    head.append(twisty, icon, label, tally, opener)
-
-    const body = document.createElement('div')
-    body.className = 'group-body'
-    body.hidden = !isOpen
-
-    /**
-     * 折展：只切 DOM 与状态，不重画整个网格（大目录下重画一次很贵）。
-     *
-     * @param {boolean} next - true 展开。
-     */
-    const setOpen = (next) => {
-      body.hidden = !next
-      twisty.textContent = next ? '▾' : '▸'
-      head.setAttribute('aria-expanded', String(next))
-      groupTouched = true
-      if (next) groupOpen.add(node.key)
-      else groupOpen.delete(node.key)
-    }
-
-    head.addEventListener('click', () => setOpen(body.hidden))
-    head.addEventListener('keydown', (event) => {
-      if (event.key !== 'Enter' && event.key !== ' ') return
-      event.preventDefault()
-      setOpen(body.hidden)
-    })
-
-    // 这一层自己的文件：按当前排序与筛选。
-    const files = computeMedia(node.files)
-    if (files.length > 0) {
-      const grid = document.createElement('div')
-      grid.className = 'group-grid'
-      for (const item of files) grid.appendChild(buildCard(item, { compact: true, where: node.rel }))
-      body.appendChild(grid)
-    }
-    // 子目录嵌在后面，缩进由 CSS 出。
-    for (const child of node.children) {
-      const childNode = buildGroup(child, open)
-      if (childNode !== null) body.appendChild(childNode)
-    }
-
-    group.append(head, body)
-    return group
-  }
-
-  /**
-   * 分组渲染：把递归结果按目录摊成一棵可折展的树。
-   *
-   * 「展开 / 折叠全部」那两个动作不在这里，它们挂在工具条「分组」按钮旁边。
-   *
-   * @param {HTMLElement} host - 画进哪里（通常是游离的 fragment）。
-   * @returns {boolean} 是否真的画出了分组。
-   */
-  const renderGrouped = (host = el.grid) => {
-    const listing = state.listing
-    if (listing === null) return false
-    const crumbs = listing.crumbs ?? []
-    const here = crumbs.length > 0 ? crumbs[crumbs.length - 1].name : listing.root.label
-    const tree = isLibraryKey(state.key) ? buildLibraryTree() : buildFolderTree(state.scanned, state.key, here)
-    if (tree.total === 0) {
-      // 整棵子树里一个媒体都没有：分组没有意义，交给平铺去显示空状态。
-      renderFlatGrid(host)
-      return false
-    }
-
-    // 没动过手就用默认视图；动过手就完全听用户的。
-    const open = groupTouched ? groupOpen : defaultOpenGroups(tree)
-
-    // 「展开 / 折叠」不在这里画：它们已经挪进工具条上「分组」按钮那一组里了
-    // （见 groupActionKeys）。这一屏里只有目录分组本身。
-
-    const rootNode = buildGroup(tree, open)
-    if (rootNode === null) {
-      renderFlatGrid(host)
-      return false
-    }
-    host.appendChild(rootNode)
-    return true
-  }
-
-  /**
-   * 当前分组视图里所有分组的键；不在分组模式、或树还没出来时返回空数组。
-   *
-   * 工具条上的「展开 / 折叠」读它——不重画、不重新扫描，纯粹是折展状态的开关。
-   *
-   * @returns {string[]} 分组键（含根）。
-   */
-  const groupActionKeys = () => {
-    if (state.mode !== 'folder' || state.listing === null) return []
-    const crumbs = state.listing.crumbs ?? []
-    const here = crumbs.length > 0 ? crumbs[crumbs.length - 1].name : state.listing.root.label
-    const tree = isLibraryKey(state.key) ? buildLibraryTree() : buildFolderTree(state.scanned, state.key, here)
-    return tree.total === 0 ? [] : allGroupKeys(tree)
-  }
-
-  /** 展开所有分组。 */
-  const expandAllGroups = () => {
-    const keys = groupActionKeys()
-    if (keys.length === 0) return
-    groupTouched = true
-    groupOpen.clear()
-    for (const key of keys) groupOpen.add(key)
-    renderGrid()
-  }
-
-  /** 折叠所有分组，只留根那一层。 */
-  const collapseAllGroups = () => {
-    const keys = groupActionKeys()
-    if (keys.length === 0) return
-    groupTouched = true
-    groupOpen.clear()
-    // keys[0] 就是根：全折起来之后总得还看得见第一层。
-    groupOpen.add(keys[0])
-    renderGrid()
-  }
-
-
-  /**
-   * 画媒体区：按当前分组方式选路。
+   * 画媒体区。
    *
    * 新内容先在**游离的 fragment 里**建好，最后一次性换掉旧的，而不是
    * 「先清空、再一个个 append」。
@@ -1444,22 +1058,11 @@
     // 重画前先把上一批卡片的悬停动画停掉。
     for (const dispose of cardDisposers.values()) dispose()
     cardDisposers.clear()
-    // 「分组」按目录树画；「当前 / 全部」都是平铺，区别只在数据来源（见 computeMedia）。
-    let grouped = state.mode === 'folder'
     // 先取好新内容，再动现有的 DOM：任何中途抛错都还留着上一屏，而不是留一屏空白。
     const next = document.createDocumentFragment()
-    if (grouped) grouped = renderGrouped(next)
-    else renderFlatGrid(next)
+    renderFlatGrid(next)
     el.grid.replaceChildren(next)
-    // is-grouped 必须反映**实际**渲染方式：分组回退成平铺时（整棵子树没有媒体），
-    // 平铺的分块布局和分组的嵌套布局是两套 CSS，类挂错整个网格就散架。
-    el.grid.classList.toggle('is-grouped', grouped)
     el.body.dataset.view = state.view
-    // 内容模式挂在 data-content 上，**不能**用 data-mode：那个属性已经被
-    // 「列表 / 刷视频」面板占着（见 CSS 的 body[data-mode]），写在一起会互相覆盖。
-    el.body.dataset.content = state.mode
-    // 「展开 / 折叠」的显隐跟着模式走，所以每画一次都刷一遍工具条。
-    syncToolbar()
   }
 
   /**
@@ -1473,9 +1076,6 @@
     clear(el.more)
     const listing = state.listing
     if (listing === null || listing.nextOffset === null) return
-    // 库的媒体来自一次递归扫描，不是这份分页的顶层列表：续页哨兵在这里只会
-    // 白拉请求（拉回来的东西也不会进网格），所以库不需要它。
-    if (isLibraryKey(state.key)) return
     moreSentinel?.disconnect()
     moreSentinel = null
 
@@ -1492,15 +1092,15 @@
         return result.payload
       })
       if (payload === undefined) return
-      // 追加优化：平铺 + 默认排序 + 无筛选时，服务端分页序与最终序一致，新页
-      // 只按块补到网格尾部。早先这里走 renderAll() 全量重画——那是 O(已加载
-      // 条数)，滚得越深每一页越卡。
+      // 追加优化：默认排序 + 无筛选时，服务端分页序与最终序一致，新页只按块补
+      // 到网格尾部。早先这里走 renderAll() 全量重画——那是 O(已加载条数)，滚得
+      // 越深每一页越卡。
       const previous = state.media.length
       listing.files = [...(listing.files ?? []), ...(payload.files ?? [])]
       listing.nextOffset = payload.nextOffset
       recomputeMedia()
       renderSummary()
-      if (state.mode === 'current' && state.sort === 'new' && state.filter.trim() === '') {
+      if (state.scope === 'dir' && state.sort === 'new' && state.filter.trim() === '') {
         for (let from = previous; from < state.media.length; from += CHUNK_SIZE) {
           el.grid.appendChild(makeChunk(from, Math.min(from + CHUNK_SIZE, state.media.length)))
         }
@@ -1562,8 +1162,7 @@
    * @param {string} key - 目标目录键。
    */
   const expandPathTo = async (key) => {
-    // 库永远排在最前：导航到任何目录，都要先让它那一层在树里露出来。
-    for (const ancestor of [LIBRARY_KEY, rootKeyOf(key), ...ancestorKeysOf(key)]) {
+    for (const ancestor of [rootKeyOf(key), ...ancestorKeysOf(key)]) {
       if (ancestor === key) continue
       applyTreeOpen(ancestor, true)
       const opener = openers.get(ancestor)
@@ -1622,20 +1221,14 @@
     // 位置在读**之前**取，直接读 el.tree.scrollTop：清理 DOM 会把 scrollTop 归零，
     // 清理后再读永远是 0。缩到滚不动时必须读成 0，否则会把上一次的位置当成当前
     // 位置还原——「滚到一半之后收起分支，再展开就凭空跳走」就是这么来的。
-    const shape = `${rootKeyOf(state.key)}|${state.mode}`
+    const shape = `${rootKeyOf(state.key)}|${state.scope}`
     const sameShape = shape === treeShape
     treeShape = shape
     const canScroll = el.tree.scrollHeight > el.tree.clientHeight + 1
     const scrollTop = sameShape && canScroll ? el.tree.scrollTop : 0
     recordTreeRender({ shape, sameShape, canScroll, scrollTop })
     const roots = state.session?.roots ?? []
-    // 「库」是树的第一枚节点：所有配置目录的聚合。一个目录都没配置时它没有
-    // 东西可聚合，就不出现——那时该由空状态提示说话。
-    const showLibrary = roots.length > 0
-    const rootKeys = [
-      ...(showLibrary ? [LIBRARY_KEY] : []),
-      ...roots.map((item) => `r${item.index}`),
-    ].join(',')
+    const rootKeys = roots.map((item) => `r${item.index}`).join(',')
 
     // 根列表没变就**不重建**，只更新状态。
     //
@@ -1645,7 +1238,7 @@
     // 建好的分支全丢了，用户白等一次请求。
     //
     // 树里唯一会因导航而变的东西是「哪一行是当前目录」，而那只是一个 class。
-    if (treeRootKeys === rootKeys && treeRootNodes.length === (showLibrary ? roots.length + 1 : roots.length)) {
+    if (treeRootKeys === rootKeys && treeRootNodes.length === roots.length) {
       reuseTree()
       return
     }
@@ -1672,8 +1265,6 @@
     // 症状不该由渲染顺序或某个根的错误来决定：结构先全部到位，之后再补
     // 细节，任何一个根出问题都不会吃掉其它根。
     treeRootNodes = []
-    // 库是唯一的顶层节点，各配置目录的根都挂在它下面（库 → 目录 → 子目录）。
-    const libraryHost = showLibrary ? armTreeLibrary() : el.tree
     for (const item of roots) {
       const rootKey = `r${item.index}`
       const wrapper = document.createElement('div')
@@ -1699,7 +1290,7 @@
       name.dataset.rootIndex = String(item.index)
       name.dataset.key = rootKey
       wrapper.append(name, children)
-      libraryHost.appendChild(wrapper)
+      el.tree.appendChild(wrapper)
 
       // 每个根默认展开（第一次看到时就把它记成「展开过」），此后由用户的点击
       // 决定。「当前根强制展开」那种写法会让人怎么点都收不起来，所以这里只在
@@ -1856,78 +1447,6 @@
   }
 
   /**
-   * 「库」节点：树唯一的顶层，所有配置目录都挂在它下面。
-   *
-   * 库既是一个整体（右侧递归列出全部目录的内容，搜索同理），也是所有目录的
-   * 入口——所以它和别的节点一样带三角：三角只管折展，点名字才是进库。
-   *
-   * @returns {HTMLElement} 库的子层容器；各配置目录的根挂在这里。
-   */
-  const armTreeLibrary = () => {
-    // 类名刻意不带 tree-root / tree-root-name：那两个类代表「配置的目录根」，
-    // 而库不是其中一个。样式与键盘导航各自显式地把它算进来。
-    const wrapper = document.createElement('div')
-    wrapper.className = 'tree-library'
-
-    const name = document.createElement('div')
-    name.className = 'tree-library-name'
-    name.title = '所有目录的内容'
-    name.tabIndex = 0
-
-    const twisty = document.createElement('span')
-    twisty.className = 'twisty'
-    const icon = document.createElement('span')
-    icon.textContent = '📚'
-    const label = document.createElement('span')
-    label.className = 'label'
-    label.textContent = '库'
-    name.append(twisty, icon, label)
-    name.dataset.label = '库'
-    name.dataset.key = LIBRARY_KEY
-
-    const children = document.createElement('div')
-    children.className = 'tree-children'
-
-    wrapper.append(name, children)
-    el.tree.appendChild(wrapper)
-
-    // 库默认展开（第一次看到时就记成「展开过」），此后由用户的三角决定；
-    // 和各配置根同一套规则，收起来之后不会被下一次渲染反悔。
-    if (!treeOpen.has(LIBRARY_KEY) && !treeClosed.has(LIBRARY_KEY)) treeOpen.add(LIBRARY_KEY)
-
-    /**
-     * 折展库：只切自己这一层，不动右侧列表（和根、子目录的规则一致）。
-     *
-     * @param {boolean} next - true 展开，false 收起。
-     * @param {boolean} [browse] - 是否顺带进库（点名字时为 true）。
-     */
-    const toggle = (next, browse = false) => {
-      applyTreeOpen(LIBRARY_KEY, next)
-      paintTreeBranch(LIBRARY_KEY, twisty, children, next)
-      // 已经在库里就不重复导航：点库名只是「回到全库」，不是重新加载。
-      if (browse && !isLibraryKey(state.key)) navigate(LIBRARY_KEY)
-    }
-    // 供键盘导航按 key 调用（和根、子目录共用一套折展状态）。
-    openers.set(LIBRARY_KEY, toggle)
-
-    twisty.addEventListener('click', (event) => {
-      event.stopPropagation()
-      // 三角是纯折展，不动右侧列表。
-      void toggle(children.dataset.open !== '1')
-    })
-
-    // 点名字 = 展开并进库；已展开就只进库——收起只归三角管（和根一致）。
-    // 双击会先送两次 click，第二下（detail > 1）交给 dblclick 语义，不再处理。
-    name.addEventListener('click', (event) => {
-      if (event.detail > 1) return
-      void toggle(true, true)
-    })
-
-    treeRootNodes.push({ item: { index: -1, path: '', label: '库' }, rootKey: LIBRARY_KEY, children, name, twisty })
-    return children
-  }
-
-  /**
    * 一次性把目录栏的滚动位置钉住。
    *
    * 只在这一次渲染的 DOM 上有效，所以它刻意**不是**一个持久的滚动监听：一个
@@ -2013,7 +1532,7 @@
    * 是「进出整棵树」而不是「逐行走一遍」。
    */
   const armTreeKeyboard = (options = {}) => {
-    const rows = () => [...el.tree.querySelectorAll('.tree-root-name, .tree-library-name, .tree-folder')]
+    const rows = () => [...el.tree.querySelectorAll('.tree-root-name, .tree-folder')]
     /**
      * 移动键盘焦点。
      *
@@ -2273,18 +1792,20 @@
   /**
    * 切换目录并同步地址栏，方便收藏和刷新。
    *
+   * 导航只负责「去哪个目录」这一件事。范围（本层 / 所有层级）不在这里动刀：
+   * 它现在是工具条上的独立开关（#scopeToggle），和排序、分组一样是用户选的
+   * 看片方式——进去一个目录还要被悄悄改掉范围，用户会觉得开关是坏的。
+   *
    * @param {string} key - 目标目录键。
    */
   const navigate = (key) => {
     state.key = key ?? ''
-    // 进「库」时把「当前」升级为「全部」（见 ensureLibraryMode）。
-    ensureLibraryMode()
     // 深路径的「…」只活到下一次导航：摊开是为了点中间那一级，换目录后收回。
     crumbsExpanded = false
     lastNavigationAt = performance.now()
     const url = new URL(window.location.href)
     url.searchParams.set('k', state.key)
-    url.searchParams.set('mode', state.pane ?? 'browse')
+    url.searchParams.set('mode', state.mode ?? 'browse')
     if (state.filter.trim() !== '') url.searchParams.set('q', state.filter)
     else url.searchParams.delete('q')
     window.history.replaceState(null, '', url)
@@ -2293,9 +1814,9 @@
     void loadListing()
   }
 
-  /** 切换面板（列表 / 刷视频）。 */
+  /** 切换模式（列表 / 刷视频）。 */
   const setMode = (mode) => {
-    state.pane = mode
+    state.mode = mode
     el.body.dataset.mode = mode
     for (const node of document.querySelectorAll('[data-mode-btn]')) {
       const active = node.dataset.modeBtn === mode
@@ -2322,17 +1843,18 @@
   const imageState = { index: 0, scale: 1, x: 0, y: 0, dragging: false, startX: 0, startY: 0 }
 
   /**
-   * 屏幕上**看得见**的那些媒体条目，按文档顺序。
+   * 屏幕上**真正看得见**的那些媒体条目，按文档顺序。
    *
    * 翻页 / 连播的顺序必须来自这里，而不是 `state.media`：分块渲染只把视口附近
-   * 的块挂进 DOM；分组视图里那些懒加载回来的条目也根本不在这份列表里。以屏幕
-   * 为准，「下一张」才是用户理解的那一张。
+   * 的块挂进 DOM，没挂的块里没有卡片；换页懒加载进来的条目也不在最初那份列表
+   * 里。以屏幕为准，「下一张」才是用户理解的那一张。
    *
    * @returns {object[]} 条目数组（与卡片一一对应）。
    */
   const shownItems = () => {
     const keys = [...el.grid.querySelectorAll('.card[data-key]')].map((node) => node.dataset.key)
-    return keys.map((key) => itemByKey.get(key)).filter((item) => item !== undefined)
+    const pool = new Map(state.media.map((item) => [item.key, item]))
+    return keys.map((key) => pool.get(key)).filter((item) => item !== undefined)
   }
 
   /** 屏幕上看得见的图片条目。 */
@@ -2360,8 +1882,8 @@
   /**
    * 打开一张图片。
    *
-   * 按 key 找，不按下标：卡片上存的就是 key（见 buildCard），下标在懒加载和
-   * 分组之后本来就对不上号。
+   * 按 key 找，不按下标：卡片上存的就是 key（见 buildCard），下标在懒加载 /
+   * 分块渲染之后本来就对不上号。
    *
    * @param {string} key - 这条媒体的 key。
    */
@@ -2378,30 +1900,30 @@
 
   // ── 播放器与连播列表 ────────────────────────────────────────────────────
 
-  /** 连播列表：当前目录里的图片 + 视频 + 音频，按当前排序。 */
+  /** 连播列表：当前目录（或整棵根目录）里的图片 + 视频 + 音频，按当前排序。 */
   const playlist = () => state.media.filter((item) => item.kind !== 'other')
 
   const player = createPlayer({
     items: [],
     onClose: () => {
-      if (state.pane === 'feed') resumeFeed()
+      if (state.mode === 'feed') resumeFeed()
     },
   })
 
   /**
    * 播放一条媒体，并把它接进连播列表。
    *
-   * 按 key 找——这就是「点哪个视频都播第一个」那个 bug 的根：早先卡片带的是
-   * `state.media` 里的下标，分组视图里懒加载出来的卡片不在那个数组里，下标算
-   * 不出来就兜底成 0，于是永远播第一条。现在卡片带 key，这里按 key 取条目，
-   * 再按**屏幕上那一份**的顺序定位连播位置。
+   * 按 key 找，不按下标——这就是「点哪个视频都播第一个」那个 bug 的根：早先
+   * 卡片存的是 `state.media` 里的下标，而分组视图里懒加载出来的卡片根本不在
+   * `state.media` 里，下标算不出来就兜底成 0，于是永远播列表第一条。现在卡片
+   * 带 key，这里按 key 取条目、再按**屏幕上那一份**的顺序定位连播位置。
    *
    * @param {string} key - 这条媒体的 key。
    */
   const openPlayer = (key) => {
-    const item = itemByKey.get(key) ?? playlist().find((candidate) => candidate.key === key)
+    const item = playlist().find((candidate) => candidate.key === key) ?? state.media.find((candidate) => candidate.key === key)
     if (item === undefined) return
-    // 屏幕上的顺序才是用户看到的顺序；它为空（理论上不会）才退回整份列表。
+    // 屏幕上的顺序是用户看到的顺序；它为空（理论上不会）才退回整份列表。
     const shown = shownItems().filter((candidate) => candidate.kind !== 'other')
     const queue = shown.length > 0 ? shown : playlist()
     const target = queue.findIndex((candidate) => candidate.key === item.key)
@@ -2486,8 +2008,7 @@
     state.feedTruncated = payload.truncated === true
     state.feedSources = [{ name: payload.root?.label ?? '根目录', rel: payload.rel ?? '' }]
     renderFeed(true)
-    // 先读服务端给的标签：库的它就叫「库」，不是第一个配置目录的名字。
-    const label = payload.root?.label ?? currentRoot()?.label ?? ''
+    const label = currentRoot()?.label ?? ''
     el.feedScope.textContent = state.feedScope === 'root' ? `范围：${label}（整个目录）` : `范围：${payload.rel === '' ? label : String(payload.rel).split('/').pop()}`
   }
 
@@ -2792,7 +2313,7 @@
    */
   const startFeedClock = () => {
     const tick = () => {
-      if (document.hidden || state.pane !== 'feed' || player.isOpen()) {
+      if (document.hidden || state.mode !== 'feed' || player.isOpen()) {
         window.setTimeout(tick, 500)
         return
       }
@@ -2819,7 +2340,7 @@
 
   /** 刷视频模式的快捷键：上下切换、空格暂停、M 静音等。 */
   const feedKey = (event) => {
-    if (state.pane !== 'feed' || player.isOpen()) return
+    if (state.mode !== 'feed' || player.isOpen()) return
     const target = event.target
     if (target instanceof HTMLElement && (target.tagName === 'INPUT' || target.isContentEditable)) return
     switch (event.key) {
@@ -2899,18 +2420,34 @@
     for (const node of document.querySelectorAll('[data-kind-btn]')) {
       node.classList.toggle('is-active', node.dataset.kindBtn === state.kinds)
     }
-    for (const node of document.querySelectorAll('[data-content-btn]')) {
-      node.classList.toggle('is-active', node.dataset.contentBtn === state.mode)
-      node.setAttribute('aria-pressed', String(node.dataset.contentBtn === state.mode))
-    }
     for (const node of document.querySelectorAll('[data-view-btn]')) {
       node.classList.toggle('is-active', node.dataset.viewBtn === state.view)
     }
-    // 「展开 / 折叠」只属于分组模式：不在分组里就整对藏起来，不给无效动作占位。
-    const folderMode = state.mode === 'folder'
-    const hasGroups = folderMode && groupActionKeys().length > 0
-    el.groupExpand.hidden = !hasGroups
-    el.groupCollapse.hidden = !hasGroups
+    const all = state.scope === 'all'
+    el.scopeToggle.classList.toggle('is-on', all)
+    el.scopeToggle.setAttribute('aria-pressed', String(all))
+    el.scopeToggle.textContent = all ? '所有层级' : '本层'
+    el.scopeToggle.title = all
+      ? '正在列出这一层及其所有子目录；点击只看当前这一层 (A)'
+      : '正在列出当前这一层；点击连子目录一起列出 (A)'
+  }
+
+  /**
+   * 切换列出范围：本层 ↔ 这一层及其所有子目录。
+   *
+   * 复用 loadListing 那条路：它已经分好「递归扫描 / 只用这一层」，扫完自己会
+   * 重画。所以这里只改状态、同步按钮，再把列表重新载一次——不为一个开关单开
+   * 第二条载入路径，否则两边迟早长歪。
+   *
+   * @param {'dir'|'all'} next - 目标范围。
+   */
+  const setScope = (next) => {
+    const wanted = next === 'all' ? 'all' : 'dir'
+    if (state.scope === wanted) return
+    state.scope = wanted
+    localStorage.setItem('mv.scope', state.scope)
+    syncToolbar()
+    void loadListing()
   }
 
   /** 上一级：路径行的「‹」和 Backspace 共用这一条。 */
@@ -2926,39 +2463,6 @@
     localStorage.setItem('mv.view', state.view)
     syncToolbar()
     renderGrid()
-  }
-
-  /**
-   * 切换内容模式：当前这一层 / 递归全部 / 递归分组。
-   *
-   * 后两个都要递归结果，所以先按需扫一次（按目录键缓存，来回切不会重复扫盘），
-   * 再重算列表。分组每次进来都回到默认展开形态——这是「我现在想看全貌」的动作。
-   *
-   * @param {'current'|'all'|'folder'} mode - 目标模式。
-   * @param {{force?: boolean}} [options] - force: 已经是这个模式也重画一遍
-   *   （用户再点一次「分组」就是想回到默认形态）。
-   */
-  const setContentMode = async (mode, options = {}) => {
-    const wanted = mode === 'all' || mode === 'folder' ? mode : 'current'
-    if (state.mode === wanted && options.force !== true) return
-    state.mode = wanted
-    localStorage.setItem('mv.mode', state.mode)
-    if (wanted !== 'current') await loadRecursive(state.key)
-    // 「全部」是逐条看内容，「分组」是逐目录看结构，两个都想从干净的展开状态开始。
-    groupTouched = false
-    groupOpen.clear()
-    syncToolbar()
-    recomputeMedia()
-    renderSummary()
-    renderGrid()
-  }
-
-  /** 内容模式轮转：当前 → 全部 → 分组 → 当前（键盘 G 走这一条）。 */
-  const cycleContentMode = () => {
-    const order = ['current', 'all', 'folder']
-    const next = order[(order.indexOf(state.mode) + 1) % order.length]
-    void setContentMode(next)
-    toast(`内容：${next === 'current' ? '当前这一层' : next === 'all' ? '所有子目录（平铺）' : '所有子目录（分组）'}`)
   }
 
   /** 当前列出内容的种类标签（空状态和统计行共用）。 */
@@ -2981,15 +2485,11 @@
     for (const node of document.querySelectorAll('[data-kind-btn]')) {
       node.addEventListener('click', () => setKinds(node.dataset.kindBtn))
     }
-    for (const node of document.querySelectorAll('[data-content-btn]')) {
-      node.addEventListener('click', () => void setContentMode(node.dataset.contentBtn, { force: true }))
-    }
-    el.groupExpand.addEventListener('click', expandAllGroups)
-    el.groupCollapse.addEventListener('click', collapseAllGroups)
     for (const node of document.querySelectorAll('[data-view-btn]')) {
       node.addEventListener('click', () => setView(node.dataset.viewBtn))
     }
     el.crumbUp.addEventListener('click', goUp)
+    el.scopeToggle.addEventListener('click', () => setScope(state.scope === 'all' ? 'dir' : 'all'))
     el.sortToggle.addEventListener('click', () => {
       const order = ['new', 'old', 'name', 'size', 'kind']
       state.sort = order[(order.indexOf(state.sort) + 1) % order.length]
@@ -3000,7 +2500,7 @@
       toast(`排序：${sortLabel[state.sort]}`)
     })
     el.refresh.addEventListener('click', () => {
-      if (state.pane === 'feed') void loadFeed(true)
+      if (state.mode === 'feed') void loadFeed(true)
       else void loadListing()
     })
     bindSidebarResize()
@@ -3025,7 +2525,7 @@
       if (state.filter.trim() !== '') url.searchParams.set('q', state.filter)
       else url.searchParams.delete('q')
       window.history.replaceState(null, '', url)
-      if (state.pane === 'feed') {
+      if (state.mode === 'feed') {
         // 刷视频模式的列表来自一次递归扫描，逐字触发会打出一串请求。
         clearTimeout(searchTimer)
         searchTimer = setTimeout(() => void loadFeed(true), 300)
@@ -3182,7 +2682,7 @@
       switch (event.key) {
         case 'Escape':
           if (!el.viewer.hidden) el.viewer.hidden = true
-          else if (state.pane === 'feed') setMode('browse')
+          else if (state.mode === 'feed') setMode('browse')
           break
         case 'v':
         case 'V':
@@ -3192,13 +2692,13 @@
         case 'S':
           el.sortToggle.click()
           break
-        case 'g':
-        case 'G':
-          // 内容模式轮转：当前 → 全部 → 分组。
-          cycleContentMode()
+        case 'a':
+        case 'A':
+          // 范围是「这一层 / 这一层及以下」，A 走同一个开关。
+          setScope(state.scope === 'all' ? 'dir' : 'all')
           break
         case 'Backspace':
-          if (state.pane !== 'browse') break
+          if (state.mode !== 'browse') break
           event.preventDefault()
           goUp()
           break
@@ -3238,8 +2738,6 @@
     window.addEventListener('popstate', () => {
       const url = new URL(window.location.href)
       state.key = url.searchParams.get('k') ?? ''
-      // 后退/前进也可能落到 ?k=lib 上，和点击、刷新走同一条规则。
-      ensureLibraryMode()
       state.filter = url.searchParams.get('q') ?? ''
       el.search.value = state.filter
       setMode(url.searchParams.get('mode') === 'feed' ? 'feed' : 'browse')
@@ -3378,11 +2876,9 @@
 
     const url = new URL(window.location.href)
     state.key = url.searchParams.get('k') ?? ''
-    // 直接打开 ?k=lib（收藏、刷新）和点树里的「库」走同一条规则。
-    ensureLibraryMode()
     state.filter = url.searchParams.get('q') ?? ''
     el.search.value = state.filter
-    state.pane = url.searchParams.get('mode') === 'feed' ? 'feed' : 'browse'
+    state.mode = url.searchParams.get('mode') === 'feed' ? 'feed' : 'browse'
 
     const ok = await reloadSession()
     if (!ok) {
@@ -3397,7 +2893,7 @@
     // 跟着右侧列表一遍遍重建——用户看到的现象是「树随着右边的列表在加载」。
     renderTree()
     // 先按 URL 恢复模式；列表模式下才需要先取目录内容。
-    if (state.pane === 'feed') {
+    if (state.mode === 'feed') {
       setMode('feed')
       return
     }

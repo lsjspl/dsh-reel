@@ -273,20 +273,19 @@ body.sidebar-collapsed .sidebar-resizer { display: none; }
 
 /* 方向键移动焦点时要看得见落在哪一行。 */
 .tree-root-name:focus-visible,
-.tree-library-name:focus-visible,
 .tree-folder:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
 
-.tree-root-name, .tree-library-name, .tree-folder { scroll-margin: 44px; }
+.tree-root-name, .tree-folder { scroll-margin: 44px; }
 
-.tree-root, .tree-library { margin-bottom: 6px; }
+.tree-root { margin-bottom: 6px; }
 
 /* 目录树的行要能扛住超长目录名（种子站风格的目录名动辄上百字符）：
    名字单行省略、图标不参与压缩、整行可换行的老规则删掉——`word-break: break-all`
    会把一行名字折成好几行，把整棵树撑得又高又难扫。 */
-.tree-root-name, .tree-library-name {
+.tree-root-name {
   display: flex; align-items: center; gap: 6px;
   padding: 6px 8px;
   border-radius: var(--radius-sm);
@@ -298,17 +297,14 @@ body.sidebar-collapsed .sidebar-resizer { display: none; }
   overflow: hidden;
 }
 
-.tree-root-name > span:last-child, .tree-library-name > span:last-child {
+.tree-root-name > span:last-child {
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
 }
 
-/* 三角的位置固定住：库那行没有三角，也得和其它根对齐。 */
-.tree-root-name .twisty, .tree-library-name .twisty { flex: none; width: 12px; color: var(--fg-faint); font-size: 10px; }
-
-.tree-root-name:hover, .tree-library-name:hover { background: var(--bg-hover); }
-.tree-root-name.is-active, .tree-library-name.is-active { background: var(--accent-soft); color: var(--accent-strong); }
+.tree-root-name:hover { background: var(--bg-hover); }
+.tree-root-name.is-active { background: var(--accent-soft); color: var(--accent-strong); }
 
 .tree-folder {
   display: flex; align-items: center; gap: 6px;
@@ -503,6 +499,20 @@ body.sidebar-collapsed .sidebar-resizer { display: none; }
   max-width: 260px;
 }
 
+/* 「所有层级」只由工具条上那枚开关表达，路径行不再长第二枚徽章。 */
+
+/* 范围开关：一枚文字按钮，开着的时候用强调色，和「排序」那种图标按钮区分开。 */
+#scopeToggle {
+  width: auto;
+  min-width: 52px;
+  padding: 0 10px;
+  font-size: 12.5px;
+  border-color: var(--line);
+  background: var(--bg-sunken);
+}
+
+#scopeToggle.is-on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-strong); }
+
 /* 点「▾」弹出的子文件夹菜单，挂在 body 上用 fixed 定位，
    不受路径行裁剪。 */
 .crumb-menu {
@@ -615,19 +625,19 @@ body.sidebar-collapsed .sidebar-resizer { display: none; }
 /* 平铺网格的分块窗口化：网格本体退化为块容器，每块自己复刻网格列。
    只挂载视口附近的块，远处的块折成定高占位，把同时活着的缩略图数量
    压在几百张以内——大目录滚动卡顿的主因是几千张图同时进解码管线。 */
-body:not([data-view="list"]) .grid:not(.is-grouped) { display: block; }
-body:not([data-view="list"]) .grid:not(.is-grouped) .grid-chunk {
+body:not([data-view="list"]) .grid { display: block; }
+body:not([data-view="list"]) .grid-chunk {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(var(--tile, 200px), 1fr));
   gap: 12px;
 }
-body:not([data-view="list"]) .grid:not(.is-grouped) .grid-chunk + .grid-chunk { margin-top: 12px; }
-body[data-view="list"] .grid:not(.is-grouped) .grid-chunk {
+body:not([data-view="list"]) .grid-chunk + .grid-chunk { margin-top: 12px; }
+body[data-view="list"] .grid-chunk {
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
-body[data-view="list"] .grid:not(.is-grouped) .grid-chunk + .grid-chunk { margin-top: 2px; }
+body[data-view="list"] .grid-chunk + .grid-chunk { margin-top: 2px; }
 .grid-chunk.is-unmounted { display: block; }
 .grid-chunk.is-unmounted > * { height: 100%; }
 
@@ -724,122 +734,12 @@ body[data-view="list"] .grid { display: block; }
 .card-media.is-previewing .kind-badge,
 .card-media.is-previewing .play-overlay { opacity: 0; }
 
-/* ── 分组卡片：一个子文件夹一张卡，卡片内部照旧平铺 ───────────────────── */
+/* ── 递归模式的来源标签 ───────────────────────────────────────────────── */
 
-/* ── 分组视图：递归 + 可折展 ─────────────────────────────────────────────
- *
- * 一个目录一个分组，子目录**嵌在父分组的正文里**，靠一层左侧竖线 + 缩进表达
- * 层级——比再套一层边框干净，也不会越嵌越窄。任意一层都能点组头折起来。
- */
-
-.grid.is-grouped {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-/* 「展开 / 折叠」是分组按钮的附属动作：比模式按钮小一号，中间隔一条细线，
-   一眼看出它们属于「分组」那一档而不是第四、第五种模式。 */
-.mode-btn.mode-mini {
-  font-size: 11.5px;
-  padding: 4px 9px;
-  color: var(--fg-faint);
-}
-
-.mode-btn.mode-mini:hover { color: var(--fg); }
-.mode-btn.mode-mini[hidden] { display: none; }
-#groupExpand { margin-left: 6px; box-shadow: -7px 0 0 -6px var(--line); }
-
-.folder-group {
-  background: var(--bg-elev);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 8px 10px 10px;
-  min-width: 0;
-}
-
-/* 嵌套的分组：只用一条竖线表示层级，不再嵌套边框和底色。 */
-.folder-group.is-child {
-  background: transparent;
-  border: 0;
-  border-left: 1px solid var(--line-soft);
-  border-radius: 0;
-  padding: 0 0 0 12px;
-  margin-top: 8px;
-}
-
-.group-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 6px;
-  margin: 0 0 6px;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  min-width: 0;
-  user-select: none;
-}
-
-.group-head:hover { background: var(--bg-hover); }
-.group-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-
-.group-head .twisty { flex: none; width: 12px; color: var(--fg-faint); font-size: 10px; }
-.group-head .ico { flex: none; font-size: 14px; }
-
-.group-name {
-  font-size: 13.5px;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-}
-
-.group-tally { flex: none; font-size: 11.5px; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
-
-.group-open {
-  margin-left: auto;
-  flex: none;
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--fg-faint);
-  font: inherit;
-  font-size: 11.5px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.15s var(--ease), color 0.15s var(--ease), border-color 0.15s var(--ease);
-}
-
-/* 「打开 ›」平时藏着：组头的主作用是折展，进目录是次要动作，不该抢注意力。 */
-.folder-group:hover > .group-head .group-open,
-.group-open:focus-visible { opacity: 1; }
-.group-open:hover { color: var(--accent-strong); border-color: var(--accent); }
-
-/* 这一层自己的文件：普通网格，列宽和平铺一致。 */
-.group-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--tile, 200px)), 1fr));
-  gap: 8px;
-}
-
-.group-body[hidden] { display: none; }
-.group-grid + .folder-group { margin-top: 8px; }
-
-.group-grid .card { border-radius: var(--radius-sm); }
-.group-grid .card:hover { transform: none; }
-.group-grid .card-info { padding: 6px 8px 7px; }
-.group-grid .card-name { font-size: 11.5px; }
-.group-grid .card-meta { font-size: 10.5px; }
-.group-grid .kind-badge,
-.group-grid .duration-badge { font-size: 10px; padding: 1px 5px; }
-.card.is-compact .card-media { aspect-ratio: 16 / 10; }
-
-/* 卡片上的来源路径：分组视图里点它跳到那一层。 */
+/* 递归模式：标出这一条来自哪一层，点它跳过去。 */
 .card-where {
   margin-top: 3px;
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--fg-faint);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1455,7 +1355,7 @@ body[data-view="list"] .card-progress { display: none; }
 .viewer-stage { touch-action: none; }
 .progress { touch-action: none; }
 .slide { touch-action: pan-y; }
-button, .card, .crumb, .crumb-name, .crumb-chevron, .crumb-fold, .tree-folder, .tree-root-name, .tree-library-name {
+button, .card, .crumb, .crumb-name, .crumb-chevron, .crumb-fold, .tree-folder, .tree-root-name {
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
 }

@@ -485,6 +485,63 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
   }
 }
 
+// ── 库：所有配置目录的聚合 ─────────────────────────────────────────────────
+//
+// 页面树顶的「库」节点用固定的 `lib` 键。列目录时合并各根的顶层，扫描时递归
+// 所有根；条目的键仍是各自的 r<index>/…，所以从库里点进某个文件夹照旧。
+// 这里单起一个 harness，用两个根来验证合并与保键。
+
+{
+  const rootA = join(workspace, '库 A')
+  const rootB = join(workspace, '库 B')
+  mkdirSync(join(rootA, '照片'), { recursive: true })
+  mkdirSync(join(rootB, '视频'), { recursive: true })
+  writeFileSync(join(rootA, 'photo.jpg'), bytes(500))
+  writeFileSync(join(rootB, 'clip.mp4'), bytes(600))
+  writeFileSync(join(rootB, '视频', 'deep.mp4'), bytes(700))
+
+  const libHarness = fakeContext()
+  apply(libHarness.ctx, Config['~standard'].validate({ roots: [rootA, rootB], requireTrustedRequest: true }).value)
+  const libServer = createServer(dispatch(libHarness.routes))
+  await new Promise((settle) => libServer.listen(0, '127.0.0.1', settle))
+  const libOrigin = `http://127.0.0.1:${libServer.address().port}`
+  const callLib = async (path) => {
+    const response = await fetch(`${libOrigin}${path}`)
+    return { status: response.status, payload: JSON.parse(await response.text()) }
+  }
+
+  const list = await callLib('/reel/api/list?k=lib')
+  checkEqual('库列表 200', list.status, 200)
+  checkEqual('库的根标签', list.payload.root.label, '库')
+  checkEqual('库的键就是 lib', list.payload.key, 'lib')
+  checkEqual('库的面包屑只有一枚', list.payload.crumbs.length, 1)
+  checkEqual('库的面包屑指向 lib', list.payload.crumbs[0].key, 'lib')
+  check('库列出第一个根的文件夹', list.payload.folders.some((folder) => folder.name === '照片' && folder.key.startsWith('r0/')))
+  check('库列出第二个根的文件夹', list.payload.folders.some((folder) => folder.name === '视频' && folder.key.startsWith('r1/')))
+  const topNames = list.payload.files.map((file) => file.name).sort()
+  check('库合并两个根的顶层文件', topNames.join(',') === 'clip.mp4,photo.jpg', topNames.join(','))
+  checkEqual('库的文件总数', list.payload.fileCount, 2)
+
+  const videoFolder = list.payload.folders.find((folder) => folder.name === '视频')
+  const inside = await callLib(`/reel/api/list?k=${encodeURIComponent(videoFolder.key)}`)
+  check('库里的文件夹键仍能单独打开', inside.status === 200 && inside.payload.files.some((file) => file.name === 'deep.mp4'))
+
+  const scan = await callLib('/reel/api/scan?k=lib&kinds=image,video&limit=100&depth=8')
+  checkEqual('库扫描 200', scan.status, 200)
+  const scanNames = scan.payload.items.map((item) => item.name).sort()
+  check('库扫描覆盖所有根', scanNames.join(',') === 'clip.mp4,deep.mp4,photo.jpg', scanNames.join(','))
+  check('库扫描的键保留各自的根前缀', scan.payload.items.every((item) => /^r[01]\//.test(item.key)))
+  checkEqual('库扫描的根标签', scan.payload.root.label, '库')
+  checkEqual('库扫描没有相对路径', scan.payload.rel, '')
+
+  // 文件级端点不认 lib：库不是一个文件，也不该被解析成某个根。
+  const stream = await callLib('/reel/stream?k=lib')
+  checkEqual('lib 不会被当成文件流式读取', stream.status, 404)
+
+  libServer.close()
+  libHarness.dispose()
+}
+
 // ── 方法限制 ───────────────────────────────────────────────────────────────
 
 {
