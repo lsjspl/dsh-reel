@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "license": "MIT",
-  "description": "Media library browser for the dsh web UI: directory tree over configured roots, grid/list gallery with three tile sizes, image viewer with zoom and paging, a page-fullscreen video player with swipe/swipe-shortcut navigation and order/random playlists, and a configurable fullscreen wallpaper.",
+  "description": "Media library for the dsh web UI: browse configured local directories as a grid or list, open images in a viewer, and play videos in a page-fullscreen player with swipe navigation, order/random playlists and a fullscreen wallpaper.",
   "keywords": [
     "dsh",
     "cordis",
