@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "license": "MIT",
-  "description": "Browse images and videos from any directory over the dsh web port: a browse/gallery mode and a vertical swipe feed, with a range-streaming video player.",
+  "description": "Media library browser for the dsh web UI: directory tree over configured roots, grid/list gallery with three tile sizes, image viewer with zoom and paging, a page-fullscreen video player with swipe/swipe-shortcut navigation and order/random playlists, and a configurable fullscreen wallpaper.",
   "keywords": [
     "dsh",
     "cordis",
@@ -19,6 +19,15 @@
   },
   "homepage": "https://github.com/lsjspl/dsh-reel#readme",
   "bugs": "https://github.com/lsjspl/dsh-reel/issues",
+  "peerDependencies": {
+    "@deepseek-ai/dsh-client-locale": ">=0.0.1-rc.1 <0.1.0 || >=0.1.0-rc.1 <0.2.0-0",
+    "@deepseek-ai/dsh-client-ui-settings": ">=0.0.1-rc.1 <0.1.0 || >=0.1.0-rc.1 <0.2.0-0",
+    "@deepseek-ai/dsh-client-ui-slots": ">=0.0.1-rc.1 <0.1.0 || >=0.1.0-rc.1 <0.2.0-0"
+  },
+  "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@ffprobe-installer/ffprobe": "^2.1.2"
+  },
   "exports": {
     ".": "./lib/reel.js",
     "./client": "./lib/client.js",
