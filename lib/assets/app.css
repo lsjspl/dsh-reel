@@ -165,8 +165,8 @@ svg { width: 18px; height: 18px; fill: currentColor; }
 
 .brand { display: flex; align-items: center; gap: 8px; flex: none; }
 
-/* 品牌：自己的彩色播放标（蓝紫圆角块 + 白三角，和 favicon 同一个图形）+
-   「DSH [REEL]」。不用 DeepSeek 那只鲸鱼——那是别人的标。 */
+/* 品牌：放映盘 × DeepSeek 巨鲸融合标（蓝紫渐变底座 + 片盘外环 + 纯白大播放按键，和 favicon 同一个图形）+
+   「DSH [REEL]」。 */
 .brand-mark {
   width: 22px; height: 22px;
   display: inline-flex;
