@@ -241,20 +241,6 @@ sudo apt update && sudo apt install ffmpeg
 
 ---
 
-## LAN Access
-
-To access the media library from tablets, phones, or smart TVs on the local network, launch dsh with:
-
-```powershell
-dsh web --host 0.0.0.0
-```
-
-1. Ensure the mobile device is on the same Wi-Fi network;
-2. First time visiting, use the tokenized link printed in the console to trust the device;
-3. Browse `http://<HOST_IP>:3080/reel` to enjoy big-screen playback and mobile browsing.
-
----
-
 ## Friendly Links
 
 - [linux.do](https://linux.do/) - 新的理想型社区。

@@ -270,20 +270,6 @@ sudo apt update && sudo apt install ffmpeg
 
 ---
 
-## 局域网访问
-
-若需在局域网内其他设备（如平板、手机、电视盒子）上使用，请在启动 dsh 时绑定全部网卡：
-
-```powershell
-dsh web --host 0.0.0.0
-```
-
-1. 手机连接同一局域网 Wi-Fi；
-2. 首次访问使用控制台输出中带有安全 Token 的链接完成设备信任；
-3. 后续即可直接访问 `http://<主机局域网IP>:3080/reel` 畅享大屏观影与移动刷片。
-
----
-
 ## 友情链接
 
 - [linux.do](https://linux.do/) - 新的理想型社区。
