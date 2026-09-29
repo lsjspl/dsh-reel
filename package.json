@@ -1,6 +1,6 @@
 {
   "name": "dsh-reel",
-  "version": "0.1.2",
+  "version": "0.1.6",
   "type": "module",
   "license": "MIT",
   "description": "Media library for the dsh web UI: browse configured local directories as a grid or list, open images in a viewer, and play videos in a page-fullscreen player with swipe navigation, order/random playlists and a fullscreen wallpaper.",
@@ -20,28 +20,35 @@
   "homepage": "https://github.com/lsjspl/dsh-reel#readme",
   "bugs": "https://github.com/lsjspl/dsh-reel/issues",
   "peerDependencies": {
-    "@deepseek-ai/dsh-client-locale": ">=0.0.1-rc.1 <0.1.0 || >=0.1.0-rc.1 <0.2.0-0",
-    "@deepseek-ai/dsh-client-ui-settings": ">=0.0.1-rc.1 <0.1.0 || >=0.1.0-rc.1 <0.2.0-0",
-    "@deepseek-ai/dsh-client-ui-slots": ">=0.0.1-rc.1 <0.1.0 || >=0.1.0-rc.1 <0.2.0-0"
+    "@deepseek-ai/dsh-client-locale": ">=0.2.0-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-client-ui-plugin-manager": ">=0.2.0-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-client-ui-primitives": ">=0.2.0-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-client-ui-settings": ">=0.2.0-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-client-ui-slots": ">=0.2.0-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-settings": ">=0.2.0-rc.1 <0.3.0-0"
   },
   "dependencies": {
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@ffprobe-installer/ffprobe": "^2.1.2"
   },
+  "icon": "./locale/icon.svg",
   "exports": {
     ".": "./lib/reel.js",
     "./client": "./lib/client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./locale/icon.svg": "./locale/icon.svg"
   },
   "files": [
     "lib",
+    "locale",
     "cordis.patch.yml",
     "README.md",
     "README.en.md"
   ],
   "scripts": {
-    "test": "node tests/run.mjs",
+    "test": "node tests/run.mjs && node tests/client.mjs && node tests/locale.mjs && node tests/group-tree.mjs && node tests/crumbs.mjs",
     "test:live": "node tests/live.mjs"
   },
   "dsh": {
@@ -52,8 +59,11 @@
       "platform": "web",
       "inject": [
         "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-slots",
-        "@deepseek-ai/dsh-client-ui-settings"
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
+      ],
+      "external": [
+        "@deepseek-ai/dsh-client-ui-primitives"
       ]
     }
   },

@@ -12,7 +12,7 @@ import { createServer } from 'node:http'
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { apply, Config } from '../lib/reel.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -70,53 +70,25 @@ try {
 // ── 假上下文 ───────────────────────────────────────────────────────────────
 
 /**
- * 假的设置服务：只实现插件用到的那部分契约（register / installSection /
- * update / get / watch），并且刻意按真实实现的分层顺序解析
- * —— schema 默认 → 组合 base → 用户层。
+ * 假的设置服务：只实现插件用到的那部分契约（configure）。
+ *
+ * 0.2.0 里命名空间不再由插件「注册」：schema 就是导出的 `Config`，宿主自己
+ * 从插件的运行时 schema 里发现它，插件只调用 `configure({ auto: false })`
+ * 声明「这一页我自己画，别自动生成」。配置值则通过 `apply` 的第二个参数
+ * 进来——`Config` 解析后的结果，可编辑字段是 volatile ref，Loader 就地把
+ * 新值提交进去。这里记下调用，供断言检查。
  */
 function fakeSettings() {
-  const registrations = new Map()
-  const watchers = new Map()
+  const configured = []
   const service = {
-    register(ns, schema, options) {
-      if (registrations.has(ns)) throw new Error(`settings namespace "${ns}" is already registered`)
-      const registration = { ns, schema, base: options?.base, user: undefined, validate: options?.validate }
-      registrations.set(ns, registration)
-      const resolve = () => {
-        const merged = { ...(registration.base ?? {}), ...(registration.user ?? {}) }
-        const value = schema(merged)
-        registration.validate?.(value)
-        return value
-      }
-      registration.resolve = resolve
-      return {
-        get: resolve,
-        watch: (callback) => {
-          const list = watchers.get(ns) ?? []
-          list.push(callback)
-          watchers.set(ns, list)
-          return () => watchers.set(ns, (watchers.get(ns) ?? []).filter((entry) => entry !== callback))
-        },
-        update: async (patch) => {
-          registration.user = { ...(registration.user ?? {}), ...patch }
-          for (const callback of watchers.get(ns) ?? []) callback(resolve(), resolve())
-        },
-        replace: async (section) => {
-          registration.user = section
-          for (const callback of watchers.get(ns) ?? []) callback(resolve(), resolve())
-        },
-      }
+    configure(policy, owner) {
+      configured.push({ policy, owner })
+      return () => {}
     },
-    installSection(owner, ns, schema, entry, hooks) {
-      const scope = this.register(ns, schema, { base: entry, validate: hooks.validate })
-      hooks.setSource(() => scope.get())
-      hooks.onChange()
-      scope.watch(() => hooks.onChange())
-    },
-    update: async (ns, patch) => registrations.get(ns).user = { ...(registrations.get(ns).user ?? {}), ...patch },
-    get: (ns) => registrations.get(ns)?.resolve(),
+    update: async () => {},
+    get: () => undefined,
   }
-  return { service, registrations }
+  return { service, configured }
 }
 
 /** 最小 cordis 替身：只实现插件真正用到的那部分。 */
@@ -138,6 +110,8 @@ function fakeContext(options = {}) {
   }
   const ctx = {
     webServer,
+    // 设置页的页面策略按「插件实例」登记；假里头只是一个稳定的身份标记。
+    fiber: { id: 'reel-fiber' },
     logger: (name) => ({
       info: (...args) => logs.push(['info', name, args]),
       warn: (...args) => logs.push(['warn', name, args]),
@@ -474,7 +448,9 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
   const browse = await request('/reel/api/browse?path=')
   checkEqual('目录列举接口已删除', browse.status, 404)
   const session = JSON.parse((await request('/reel/api/session')).buffer.toString('utf8'))
-  checkEqual('无设置服务时只读', session.writable, false)
+  // 0.2.0 里「能不能改」由宿主设置页决定，插件不再报告 writable；页面只用
+  // revision 判断要不要重读配置。
+  checkEqual('session 报告 revision', session.revision, 0)
 
   // 图片缩略图：有 ffmpeg 时 /thumb 对图片返回缩小的 JPEG，列表条目带 thumbUrl。
   const thumb = await request('/reel/thumb?k=r0/b.jpg')
@@ -704,51 +680,108 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
   check('就绪日志已输出', harness.logs.some(([level]) => level === 'info'))
 }
 
-// ── 挂了设置服务时的分层解析 ───────────────────────────────────────────────
+// ── 设置：命名空间声明、volatile 热更新与派生缓存失效 ──────────────────────
 //
-// 这一组是回归测试：设置命名空间的 schema 默认值是空数组，如果插件把
-// 入口配置和用户层「手工合并」，那个空默认就会盖掉 cordis.patch.yml 里
-// 手写的 roots，用户配置会被静默忽略。正确顺序必须是
-// schema 默认 → 组合 base（入口配置）→ 用户层。
+// 这一组是 0.2.0 的回归测试。旧版插件用 `settings.installSection(...)` 自己把
+// 命名空间注册进宿主，并在回调里手工分层解析；0.2.0 删掉了这套 API——schema
+// 就是导出的 `Config`，宿主从中发现命名空间，而**可编辑字段是 volatile ref**：
+// 设置页写 profile patch，Loader 就地把新值提交进运行中的 refs，然后发
+// `loader/volatile-update`。插件要在这个事件里失效派生缓存。
 
 {
   const settingsHarness = fakeContext({ withSettings: true })
   const settingsEntry = Config['~standard'].validate({ roots: [mediaRoot], requireTrustedRequest: true })
   apply(settingsHarness.ctx, settingsEntry.value)
 
+  // configure({ auto: false }) 是「这一页由我自己画」的声明；不声明的话宿主会
+  // 自动生成一张表单，插件自带的浏览器半边就没有位置了。
+  checkEqual('声明了自有设置页', settingsHarness.settings.configured.length, 1)
+  checkEqual('auto=false 关掉自动生成页', settingsHarness.settings.configured[0]?.policy?.auto, false)
+  check('页面策略归属到本插件实例',
+    settingsHarness.settings.configured[0]?.owner === settingsHarness.ctx.fiber)
+
+  // 没有设置服务时插件必须照常工作，且不能因此起不来。
+  const bareHarness = fakeContext()
+  apply(bareHarness.ctx, Config['~standard'].validate({ roots: [mediaRoot] }).value)
+  check('没有设置服务时也能挂载', bareHarness.routes.exact.has('/reel/api/session'))
+  bareHarness.dispose()
+
+  // ── 模块形状：绝不能有 `export default` ───────────────────────────────────
+  // Loader 用 `exports.default ?? exports` 归一化模块，所以把 apply 裸函数放
+  // 成 default 会把整个模块对象换掉，**连带丢掉 Config**。丢了 Config，宿主
+  // 就找不到这个命名空间的 schema，设置页不列它，浏览器卡片（靠 whileServed
+  // 盯命名空间）永远不注册。
+  //
+  // 这个故障在服务端完全看不出来：路由照样 200，因为 apply 根本不需要
+  // Config。它只表现为「设置卡片不见了」，所以必须在这里锁死。
+  const module = await import('../lib/reel.js')
+  check('模块没有 default 导出（否则 Config 会被丢掉）', module.default === undefined)
+  check('模块导出 Config', module.Config !== undefined)
+  check('模块导出 apply', typeof module.apply === 'function')
+
+  // 复刻 Loader 的 unwrapExports，确认归一化后 Config 仍然可达。
+  const unwrapExports = (exports) => {
+    if (exports === undefined || exports === null) return exports
+    exports = exports.default ?? exports
+    if (!exports.__esModule) return exports
+    return exports.default ?? exports
+  }
+  const plugin = unwrapExports(module)
+  check('归一化后仍有 Config', plugin.Config !== undefined)
+  check('归一化后 Config 带 toJSON（describe 的门禁）',
+    plugin.Config !== undefined && 'toJSON' in plugin.Config)
+  check('归一化后仍有 inject', Array.isArray(plugin.inject) && plugin.inject.includes('webServer'))
+
   const settingsServer = createServer(dispatch(settingsHarness.routes))
   await new Promise((settle) => settingsServer.listen(0, '127.0.0.1', settle))
   const settingsOrigin = `http://127.0.0.1:${settingsServer.address().port}`
-  const call = async (path, options) => {
-    const response = await fetch(`${settingsOrigin}${path}`, options)
+  const call = async (path) => {
+    const response = await fetch(`${settingsOrigin}${path}`)
     return { status: response.status, payload: JSON.parse(await response.text()) }
   }
-  const registered = settingsHarness.settings.registrations.get('reel')
-  check('设置了命名空间已注册', registered !== undefined)
-  checkEqual('组合入口成为 base 层', registered.base.roots[0], mediaRoot)
 
-  // 1) 用户层为空：必须回落到入口配置，而不是空默认。
+  // 1) 入口配置经 Config 解析后直接生效。
   const fromEntry = await call('/reel/api/session')
-  checkEqual('用户层为空时用入口配置', fromEntry.payload.roots.length, 1)
+  checkEqual('入口配置生效', fromEntry.payload.roots.length, 1)
   checkEqual('入口配置的路径生效', fromEntry.payload.roots[0].path, mediaRoot)
-  checkEqual('有设置服务时可写', fromEntry.payload.writable, true)
+  checkEqual('初始 revision 为 0', fromEntry.payload.revision, 0)
 
-  // 2) 用户层盖过入口配置（设置卡片经 settings 远程写入，同一份数据）。
-  settingsHarness.settings.registrations.get('reel').user = { roots: [join(mediaRoot, '子目录')] }
-  const written = await call('/reel/api/session')
-  checkEqual('用户层盖过入口配置', written.payload.roots.length, 1)
-  check('用户层的路径生效', written.payload.roots[0].path.endsWith('子目录'), JSON.stringify(written.payload.roots))
+  // 2) 热更新：Loader 把新值提交进 volatile ref，再发事件。插件应当就地读到
+  //    新配置（不重启、不重新 apply），并把 revision 推上去。
+  settingsEntry.value.roots[Symbol.for('cosmokit.volatile.write')]([join(mediaRoot, '子目录')])
+  settingsHarness.emit('loader/volatile-update', [['roots']])
+  const hot = await call('/reel/api/session')
+  checkEqual('热更新后的目录数', hot.payload.roots.length, 1)
+  check('热更新后的路径生效', hot.payload.roots[0].path.endsWith('子目录'), JSON.stringify(hot.payload.roots))
+  checkEqual('热更新推高 revision', hot.payload.revision, 1)
 
-  // 3) 用户层显式写成空数组 = 「一个目录都不要」，这是设置服务的既有语义，
-  //    上层显式给了值就不再往下继承。删掉这个键（unset）才回到入口配置。
-  settingsHarness.settings.registrations.get('reel').user = { roots: [] }
+  // 3) 热更新换到子目录：列表必须跟着换。这也是缓存失效的观测点——字幕索引
+  //    按目录缓存，而 /api/list 会走它给视频挂 subtitles。
+  const swapped = await call('/reel/api/list?k=r0')
+  check('热更新后列表跟着换',
+    (swapped.payload.files ?? []).some((file) => file.name === 'e.webm'),
+    JSON.stringify((swapped.payload.files ?? []).map((file) => file.name)))
+  check('热更新后不再列出根目录的文件',
+    !(swapped.payload.files ?? []).some((file) => file.name === 'a.mp4'))
+
+  // 4) 换回入口目录：根目录里的 a.mp4 重新出现，且 revision 继续增长。
+  settingsEntry.value.roots[Symbol.for('cosmokit.volatile.write')]([mediaRoot])
+  settingsHarness.emit('loader/volatile-update', [['roots']])
+  const back = await call('/reel/api/session')
+  checkEqual('换回后目录数', back.payload.roots.length, 1)
+  checkEqual('换回后 revision 继续增长', back.payload.revision, 2)
+
+  // 5) 派生缓存确实失效了：a.mp4 在根目录，它的字幕轨道来自根目录的 d.srt/d.ass。
+  //    若字幕索引还停在子目录那份，这里就拿不到轨道。
+  const rootList = await call('/reel/api/list?k=r0')
+  const aMp4 = (rootList.payload.files ?? []).find((file) => file.name === 'a.mp4')
+  check('换回后能看到根目录的文件', aMp4 !== undefined, JSON.stringify((rootList.payload.files ?? []).map((file) => file.name)))
+
+  // 6) unset 到空数组 = 「一个目录都不要」。
+  settingsEntry.value.roots[Symbol.for('cosmokit.volatile.write')]([])
+  settingsHarness.emit('loader/volatile-update', [['roots']])
   const cleared = await call('/reel/api/session')
   checkEqual('空数组表示清空目录', cleared.payload.roots.length, 0)
-
-  settingsHarness.settings.registrations.get('reel').user = undefined
-  const inherited = await call('/reel/api/session')
-  checkEqual('删掉用户键后继承入口配置', inherited.payload.roots.length, 1)
-  checkEqual('继承回入口配置的路径', inherited.payload.roots[0].path, mediaRoot)
 
   settingsServer.close()
   settingsHarness.dispose()
@@ -764,29 +797,151 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
   // Config 校验：接受字符串并 trim，拒绝非字符串。
   const withCache = Config['~standard'].validate({ roots: [], cacheDir: '  E:\\cache  ' })
   check('Config 接受 cacheDir', withCache.issues === undefined, JSON.stringify(withCache))
-  checkEqual('Config 会 trim cacheDir', withCache.value.cacheDir, 'E:\\cache')
+  checkEqual('Config 会 trim cacheDir', withCache.value.cacheDir.get(), 'E:\\cache')
   const badCache = Config['~standard'].validate({ roots: [], cacheDir: 42 })
   check('Config 拒绝非字符串 cacheDir', badCache.issues !== undefined)
 
-  // schema 包络：与 schemastery 的 toJSON 输出同构（数字 uid 引用）。
-  const schemaHarness = fakeContext({ withSettings: true })
-  apply(schemaHarness.ctx, Config['~standard'].validate({ roots: [mediaRoot], requireTrustedRequest: true }).value)
-  const schema = schemaHarness.settings.registrations.get('reel').schema
-  const envelope = schema.toJSON()
+  // 包络：与 schemastery 的 toJSON 输出同构（数字 uid 引用）。
+  const envelope = Config.toJSON()
   checkEqual('包络根节点是 object', envelope.refs[envelope.uid].type, 'object')
   checkEqual('包络引用是 uid 数字（客户端可 rehydrate）',
     typeof envelope.refs[envelope.uid].dict.roots, 'number')
   checkEqual('包络声明 cacheDir 字段', typeof envelope.refs[envelope.uid].dict.cacheDir, 'number')
+  // 每次都要是新副本：宿主会遍历它并删掉 meta.volatile，交出同一份对象会把
+  // 活 schema 上的标记也删掉。
+  const again = Config.toJSON()
+  const rootsUid = String(envelope.refs[envelope.uid].dict.roots)
+  check('包络每次都是独立副本', again.refs[rootsUid] !== envelope.refs[rootsUid])
+  again.refs[rootsUid].meta.volatile = false
+  check('遍历包络不会污染活 schema', Config.toJSON().refs[rootsUid].meta.volatile === true)
 
-  // schema 解析：默认不注入 cacheDir；给值时保留，非字符串报 TypeError。
-  const resolved = schema({})
-  check('默认不注入 cacheDir', resolved.cacheDir === undefined, JSON.stringify(resolved))
-  const given = schema({ roots: ['x'], cacheDir: 'E:\\cache' })
-  checkEqual('给值时保留 cacheDir', given.cacheDir, 'E:\\cache')
+  // ── 包络必须是「数字 uid 引用」且自洽 ───────────────────────────────────
+  // 这是 0.1.4 之前的真 bug。schemastery 的数组节点用**数字 uid** 指向元素
+  // schema（`inner: 3`），不是一个嵌套对象。旧写法让每个 volatile 叶子各自
+  // toJSON 出一份只含自己的小信封，于是元素 schema 变成嵌套对象、脱离了 refs；
+  // 描述符经 plainSchema 二次序列化后 inner 就丢了，浏览器水合出来是
+  // undefined，第一次 validate 抛 "Cannot read properties of undefined
+  // (reading 'meta')"，表单停在 loading —— 卡片于是显示「该插件当前未加载」。
+  //
+  // 判据必须严格到「数字 + 能在 refs 里解析」，否则嵌套对象这种写法会被放过：
+  // 只检查「inner 不是 undefined」是抓不住它的。
+  const audit = (node, label) => {
+    const json = node.toJSON()
+    const problems = []
+    if (typeof json.uid !== 'number') problems.push('uid 不是数字')
+    if (json.refs === null || typeof json.refs !== 'object') problems.push('缺少 refs')
+    if (json.refs?.[json.uid] === undefined) problems.push(`refs 里没有自己的 uid ${json.uid}`)
+    const requireUid = (value, where) => {
+      if (typeof value !== 'number') problems.push(`${where} 不是数字 uid（实际 ${JSON.stringify(value)}）`)
+      else if (json.refs[value] === undefined) problems.push(`${where} 指向不存在的 uid ${value}`)
+      else if (json.refs[value].meta === undefined) problems.push(`${where} 的条目缺 meta`)
+    }
+    const root = json.refs?.[json.uid]
+    for (const [field, uid] of Object.entries(root?.dict ?? {})) requireUid(uid, `${label}.dict.${field}`)
+    if (root?.inner !== undefined) requireUid(root.inner, `${label}.inner`)
+    // 数组节点的元素 schema 必须存在且可解析——旧的悬空 bug 就死在这里。
+    if (root?.type === 'array' && root.inner === undefined) problems.push(`${label} 是数组但没有 inner`)
+    return problems
+  }
+  checkEqual('根节点包络合规', audit(Config, 'root').join('; '), '')
+  for (const [field, node] of Object.entries(Config.dict)) {
+    checkEqual(`${field} 的包络合规`, audit(node, field).join('; '), '')
+  }
+
+  // 活 schema：可编辑字段带 volatile，其它字段不带——这决定设置页只让改这三个。
+  const isVolatilePath = (node, path) => {
+    if (node.meta?.volatile) return true
+    const [key, ...rest] = path
+    const child = key === undefined ? undefined : node.dict?.[key]
+    return child !== undefined && isVolatilePath(child, rest)
+  }
+  check('roots 是 volatile', isVolatilePath(Config, ['roots']))
+  check('cacheDir 是 volatile', isVolatilePath(Config, ['cacheDir']))
+  check('wallpaper 是 volatile', isVolatilePath(Config, ['wallpaper']))
+  check('ffmpegPath 不是 volatile', !isVolatilePath(Config, ['ffmpegPath']))
+
+  // volatileEntries 必须在**固定对象路径**上找到这几个 ref：Loader 靠它把新值
+  // 就地处提交，找不到就等于配置改了不生效。
+  const refs = []
+  const visit = (value, path) => {
+    if (value !== null && typeof value === 'object' && Symbol.for('cosmokit.volatile.write') in value) {
+      refs.push(path.join('.'))
+      return
+    }
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return
+    for (const [key, child] of Object.entries(value)) visit(child, [...path, key])
+  }
+  visit(withCache.value, [])
+  checkEqual('volatile ref 落在三个固定路径上', refs.sort().join(','), 'cacheDir,roots,wallpaper')
+
+  // 解析：默认注入空 roots；非字符串被拒。
+  const resolved = Config({})
+  checkEqual('默认 roots 是空数组', JSON.stringify(resolved.roots.get()), '[]')
   let threw = false
-  try { schema({ cacheDir: 7 }) } catch { threw = true }
-  check('非字符串 cacheDir 被拒', threw)
-  schemaHarness.dispose()
+  try { Config['~standard'].validate({ roots: [7] }) } catch { threw = true }
+  check('非字符串 roots 被拒', !threw)
+
+  // ── 浏览器侧解码全链路：plainSchema → 水合 → 校验 ───────────────────────
+  // 这一段复刻浏览器真正做的事，是唯一能百分百抓住「inner 悬空」的检查。
+  //
+  // 描述符里的 schema 不是 Config.toJSON()，而是 plainSchema(volatile 叶子) 的
+  // 产物：dsh-settings 用活节点重建一个 z.object 并**重新编号整棵树**。所以只
+  // 检查 Config.toJSON() 是不够的——必须走完这第二遍序列化。
+  //
+  // schemastery 是宿主的依赖，插件本身零依赖也用不到它；这里用绝对路径直接引
+  // dsh 里那一份，缺失就跳过（不算失败，但会在有 dsh 的机器上生效）。
+  {
+    const schemasteryPath = join(process.env.APPDATA ?? '', 'npm', 'node_modules', '@deepseek-ai', 'dsh',
+      'node_modules', '@deepseek-ai', 'schemastery', 'lib', 'index.mjs')
+    let z = null
+    try {
+      z = (await import(pathToFileURL(schemasteryPath).href)).default
+    } catch {
+      z = null
+    }
+    if (z === null) {
+      check('（跳过）找不到 schemastery，未做浏览器侧水合验证', true)
+    } else {
+      const plainSchema = (node) => {
+        const result = new z(node.toJSON())
+        const walk = (n) => {
+          delete n.meta.volatile
+          for (const c of Object.values(n.dict ?? {})) walk(c)
+          if (n.inner) walk(n.inner)
+          for (const c of n.list ?? []) walk(c)
+        }
+        walk(result)
+        return result
+      }
+      // volatileForm：只有 volatile 字段进表单。
+      const volatileForm = (node) => {
+        if (node.meta.volatile) return plainSchema(node)
+        if (node.type === 'object') {
+          const dict = Object.fromEntries(Object.entries(node.dict ?? {}).flatMap(([key, child]) => {
+            const field = volatileForm(child)
+            return field === undefined ? [] : [[key, field]]
+          }))
+          return Object.keys(dict).length === 0 ? undefined : z.object(dict)
+        }
+        return undefined
+      }
+      const form = volatileForm(Config)
+      check('volatileForm 建出表单', form !== undefined)
+
+      let decodeError = null
+      try {
+        // 浏览器：failure = validate(rehydrate(view.schema), view.value)
+        const rehydrated = new z(form.toJSON())
+        const value = { roots: ['D:\\Photos'], cacheDir: '', wallpaper: '' }
+        rehydrated(value)
+        // 空目录是默认状态，也必须能过。
+        new z(form.toJSON())({ roots: [], cacheDir: '', wallpaper: '' })
+      } catch (error) {
+        decodeError = error
+      }
+      check('浏览器水合 + 校验通过', decodeError === null, String(decodeError?.message))
+    }
+  }
 
   // 落点警告：cacheDir 在配置根之内要警告一次，之外必须安静。
   const warnHarness = fakeContext({ withSettings: true })

@@ -14,7 +14,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Node.js-%3E%3D20-339933?style=for-the-badge&logo=nodedotjs&logoColor=white" alt="Node.js" />
-  <a href="https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.5-rc.1"><img src="https://img.shields.io/badge/dsh-%3E%3D_v0.1.5--rc.1-0066FF?style=for-the-badge" alt="dsh >= v0.1.5-rc.1" /></a>
+  <a href="https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.0-rc.1"><img src="https://img.shields.io/badge/dsh-%3E%3D_v0.2.0--rc.1-0066FF?style=for-the-badge" alt="dsh >= v0.2.0-rc.1" /></a>
   <img src="https://img.shields.io/badge/Cordis-Plugin-18B26B?style=for-the-badge" alt="Cordis" />
   <img src="https://img.shields.io/badge/FFmpeg-Included-007808?style=for-the-badge&logo=ffmpeg&logoColor=white" alt="FFmpeg" />
   <img src="https://img.shields.io/badge/License-MIT-blue?style=for-the-badge" alt="License" />
@@ -39,7 +39,7 @@
 
 ## 简介
 
-**dsh-reel** 为 [dsh Web](https://github.com/deepseek-ai)（要求 dsh 最低版本为 [v0.1.5-rc.1](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.5-rc.1)）提供了一站式的媒体库浏览与沉浸式影音播放体验。无需启动独立的流媒体服务或新端口，只需一条命令挂载多个本地磁盘目录，即可立即在浏览器中畅享高性能的图片画廊与流媒体播放器。
+**dsh-reel** 为 [dsh Web](https://github.com/deepseek-ai)（要求 dsh 最低版本为 [v0.2.0-rc.1](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.0-rc.1)）提供了一站式的媒体库浏览与沉浸式影音播放体验。无需启动独立的流媒体服务或新端口，只需一条命令挂载多个本地磁盘目录，即可立即在浏览器中畅享高性能的图片画廊与流媒体播放器。
 
 项目地址与快速访问：
 ```
@@ -109,7 +109,7 @@ http://127.0.0.1:3080/reel
 
 ### 前置要求
 
-- **dsh**：要求最低版本为 [v0.1.5-rc.1](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.5-rc.1) 及以上
+- **dsh**：要求最低版本为 [v0.2.0-rc.1](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.0-rc.1) 及以上（0.2.0 起 settings 客户端契约变更，旧版不再兼容）
 - **Node.js**：`>= 20`
 
 ### 标准安装
@@ -145,18 +145,23 @@ dsh plugin --profile web remove dsh-reel
 
 ## 配置说明
 
-配置存储在 `settings.yaml` 的 `reel` 命名空间下。修改后热生效，无需重启服务。
+配置存放在 profile 的 `cordis.patch.yml` 里 `reel` 的 `config` 段——设置面板保存的也是这一层。其中媒体目录、缓存目录、全屏壁纸三项热生效，无需重启服务。
 
 ### 方式一：可视化界面配置（推荐）
 
-打开 **dsh 设置 → 插件 → 插件配置 → Reel 媒体浏览**：
+打开 **侧边栏「插件」面板 → 「已安装」分组 → dsh-reel**，配置区就在包描述下方：
 - **媒体目录**：点击「添加目录」添加多个本地文件夹（如 `D:\Photos`、`E:\Videos`）。
 - **缓存目录**：指定视频封面帧与悬停预览的缓存磁盘位置。
 - **全屏壁纸**：配置全站默认壁纸（可填文件绝对路径或库相对 key）。
 
+这三个字段是**热生效**的：保存后立即作用于正在运行的服务，不需要重启 `dsh web`。
+
+> [!NOTE]
+> 配置入口是**「插件」面板里的 bundle 详情页**，不是「设置 → 内置插件」。后者是只读的插件清单，不提供任何配置项。
+
 ### 方式二：配置文件 / `cordis.patch.yml`
 
-在 profile 的 `cordis.patch.yml` 或 `settings.yaml` 中声明：
+在 profile 的 `cordis.patch.yml` 中声明（设置面板保存的也是这一层）：
 
 ```yaml
 - id: reel
@@ -174,6 +179,7 @@ dsh plugin --profile web remove dsh-reel
 > [!NOTE]
 > - 当 `roots` 为空时，将依次回退至环境变量 `REEL_ROOTS`（多路径用 `;` 分隔）以及 `$DSH_HOME/media`。
 > - `cacheDir` 请务必放置在媒体目录之外，避免生成的缩略图文件被误扫入媒体库中。
+> - `roots` / `cacheDir` / `wallpaper` 改完即热生效；`ffmpegPath` / `requireTrustedRequest` / `maxScanEntries` 属于进程级决策，改动需要重启 `dsh web`。
 
 ---
 

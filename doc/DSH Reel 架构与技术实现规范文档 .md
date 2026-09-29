@@ -74,22 +74,31 @@
 2. **免编译流水线**：前端完全基于原生 ES 标准实现（Vanilla JavaScript + 原生 CSS Variables），不引入 Webpack、Vite 或 Babel 等编译链路。代码以纯静态资产直出交付，修改后立即生效。
 
 ### 1.3 配置模型与分层覆盖规范
-插件对外导出了符合 [Standard Schema](https://github.com/standard-schema/standard-schema) 规范的配置校验器：
+插件对外导出的 `Config` 同时满足两套契约——cordis 的 [Standard Schema](https://github.com/standard-schema/standard-schema) 边界校验，与 schemastery 的 schema 形状（`type` / `dict` / `meta` / `toJSON()`），且**不引入 schemastery 依赖**（手写同构实现）：
 
 ```javascript
 // lib/reel.js
-export const Config = {
-  '~standard': {
-    version: 1,
-    vendor: 'dsh-reel',
-    validate(value) { /* 强类型边界校验 */ }
-  }
-}
+export function Config(value) { /* 返回解析后的 section，可编辑字段是 volatile ref */ }
+Config.type = 'object'
+Config.dict = { roots: /* volatile 叶子 */, cacheDir: ..., wallpaper: ..., ffmpegPath: ..., ... }
+Config.meta = { default: {} }
+Config.toJSON = () => /* uid/refs 数字引用包络，浏览器半边据此 rehydrate */
+Config['~standard'] = { version: 1, vendor: 'schemastery', validate(value) { /* 强类型边界校验 */ } }
 ```
+
+> **`vendor` 为什么写 `schemastery`**：dsh 0.2.0 的 Loader 用 `schema['~standard'].vendor === 'schemastery'` 判断「这是不是一份 schemastery 配置」，只有成立才走 volatile 热提交路径（见 `cordis-plugin-loader` 的 `equalExceptVolatile`）。这里的 `vendor` 声明的是**语义契约**而非包来源，本实现完整遵循该语义，故如实标注。
+
+#### volatile 字段与热更新 (Live Settings)
+
+`roots`、`cacheDir`、`wallpaper` 三个可编辑字段声明为 **volatile**：设置页写的是 profile patch，Loader 检测到「只有 volatile 字段变化」时**不会重启插件**，而是把新值就地提交进运行中的 ref 引用，随后发出 `loader/volatile-update` 事件。插件在该事件里失效派生缓存（字幕索引按目录缓存、ffmpeg 探测结果），因此配置改动**热生效、零重启**。
+
+其余字段（`ffmpegPath`、`requireTrustedRequest`、`maxScanEntries`）保持普通配置语义——它们改变的是进程级决策（用哪个 ffmpeg、是否信任非回环对端、扫描上限），改动即重启，这是与真实影响一致的行为。
+
+> **回归要点**：0.2.0 删除了 `settings.installSection(...)`。命名空间不再由插件「注册」，宿主直接从插件的运行时 schema 发现它；插件只需 `settings.configure({ auto: false })` 声明「这一页我自己画」，避免宿主再生成一张自动表单。
 
 #### 配置解析优先级链 (Cascading Configuration)
 配置系统支持热重载（Hot-reload），生效顺序严格由高到低降级：
-1. **DSH 用户设置层 (User Settings Layer)**：通过 DSH 设置中心面板由用户修改并落盘至 `settings.yaml` 的配置；
+1. **门户设置层 (Profile Patch Layer)**：通过 DSH 设置中心面板由用户修改并落盘至 profile patch 的配置；
 2. **编排层初始配置 (Composition Row Entry)**：`cordis.patch.yml` 中配置的静态参数；
 3. **环境变量层 (Environment Fallback)**：读取 `REEL_ROOTS`（以操作系统路径分隔符分割的目录列表）；
 4. **系统缺省兜底**：使用 `$DSH_HOME/media`（若目录物理存在）。
@@ -461,16 +470,39 @@ window.__ModuleLoader__.load({
 组件完全脱离 JSX，采用原生 `react.createElement` 树状构造界面，直接消费 DSH 运行态提供的 React 实例，彻底规避了 `babel-plugin-transform-react-jsx` 等转换依赖。
 
 ### 7.3 Cordis UI 插槽挂载机制
-在 DSH 客户端的 Cordis 上下文中，插件通过以下服务插槽将自身注入到系统设置页中：
-- **插槽标识**：`settings.plugin.item`；
-- **命名空间**：`reel`；
-- **数据绑定**：通过注入的 `uiSettings` 服务对 `reel` 命名空间下的 `roots`、`cacheDir`、`wallpaper` 进行原子读写与热生效下发。
+
+**插槽选择是这一节最容易写错的地方。** dsh 对「配置该放哪」有明确分工：
+
+| 插槽 | 归属 | 说明 |
+|---|---|---|
+| `plugins.item` | **官方宿主平面命名空间专用** | 「官方」分组列表。插槽契约原文：*OCCUPIED by the official settings pages, one companion package per host-plane namespace; a bundle's configuration belongs in `plugins.bundle.config` or `plugins.row.config` instead.* |
+| `plugins.bundle.config` | **bundle 自身配置** | 渲染在 bundle 详情页：描述之下、组件行之上（`view: 'page'`） |
+| `plugins.row.config` | bundle 内某一行插件的配置 | 按 `<包名>#<行 id>` 键控，在该行上生成「配置」入口 |
+
+dsh-reel 是一个 **bundle**（自带 `cordis.patch.yml`），所以它的配置属于 **`plugins.bundle.config`**，渲染在自己的 bundle 详情页上——即「插件」面板 → 已安装 → dsh-reel。
+
+- **插槽标识**：`plugins.bundle.config`，**key = 包的完整名字**（`dsh-reel`）。页面用 `pkg.name` 派发（`renderSlot("plugins.bundle.config", { view: "page" }, { entryKey: pkg.name })`），key 不匹配就不渲染，而 `configured` 标志来自 `ledger.bundles.has(pkg.name)`。
+- **命名空间**：`reel`（与插槽 key 无关，不要混淆）。
+- **数据绑定**：浏览器半边注入 `configForms` 服务，用官方的 `SettingsFormModel` 对 `reel` 命名空间做**暂存式**编辑（草稿留在本地，保存时以 revision 为栅栏一次原子提交），并复用官方 `@deepseek-ai/dsh-client-ui-primitives` 的 `SettingsForm` / `SettingsValueField` 渲染表单——界面风格与内置插件页天然一致。
+
+**可见性绑定**：卡片注册包在 `configForms.whileServed(['reel'], …)` 里。宿主一旦不再提供该命名空间（例如没装这个插件），卡片自动消失，页面不会留下指向不存在配置的空壳。
+
+**模块形状约束**：宿主半边**绝不能有 `export default`**。Loader 用 `exports.default ?? exports` 归一化模块，把 `apply` 裸函数放成 default 会整个替换掉模块对象，**连带丢掉 `Config`**；丢了 `Config`，设置提供方就发现不了命名空间，卡片随之消失。该故障在服务端完全不可见（路由照样 200，因为 `apply` 不需要 `Config`），只表现为卡片缺失。
 
 ---
 
 ## 8. 测试工程与沙箱验证矩阵 (Testing & Verification Matrix)
 
 系统配备了高度解耦的自动化测试工程，摆脱了对外部实际浏览器与复杂环境的依赖。
+
+### 8.0 客户端与显示文案契约测试（tests/client.mjs、tests/locale.mjs）
+
+这两套补的是同类盲区：**服务端测试照不出客户端半边的错误**。路由永远 200，因为这些故障都不影响请求处理，只影响界面是否出现、显示什么语言。
+
+- **`tests/client.mjs`** — 把 `lib/client.js` 当浏览器模块系统那样加载，锁死两个极易写错的字面量：插槽名（`plugins.bundle.config`，不是 `plugins.item`）与 cell key（包名 `dsh-reel`）。同时校验 `inject` 服务、`whileServed` 命名空间、编辑/重置/卸载等交互。
+- **`tests/locale.mjs`** — 锁死显示文案的来源。dsh 的 `readPluginMeta` 读 `<包>/locale/en.json` 与 `locale/zh.json` 的 `meta.title` / `meta.description`，合成语言映射；**缺失时静默回退到 package.json 的 name/description**——不报错，只是中文界面上显示英文。该测试检查两个字典存在、键一致、中文文案真的含中文，以及 `exports`/`files` 里正确声明了 `locale`（子路径解析不到或发布包漏带，字典同样读不到），外加图标的四条硬规则（相对路径、留在包内、扩展名合法、≤256 KiB）。
+
+两套都做过变异验证：人为注入对应缺陷后测试确实失败。
 
 ### 8.1 虚拟 Cordis 上下文端到端测试 (tests/run.mjs)
 测试套件构建了一个极简的 Cordis IoC 模拟上下文，并挂载一个原生的 Node.js HTTP Server：
@@ -479,6 +511,7 @@ window.__ModuleLoader__.load({
   - 构造合法的与畸形的 `Range` 标头，断言 `206` 与 `416` 状态码及分片准确性；
   - 校验跨目录软链接是否被 `resolveInside` 精准拦截（断言返回 `404`）；
   - 断言 SRT/ASS 字幕转换为 WebVTT 后的 Cue 时间戳与文本解析结果。
+- **浏览器侧解码全链路**：用宿主里那份真实 schemastery 复刻 `plainSchema → new Schema() → validate`。这是唯一能照出「配置包络引用悬空」的检查——悬空时客户端解码抛错、表单停在 loading，卡片显示「未加载」，而宿主侧毫无察觉。
 
 ### 8.2 基于 Node.js VM 的无头 DOM 路径折叠测试 (tests/crumbs.mjs)
 为在无浏览器环境下测试 `app.js` 的核心 DOM 计算逻辑，测试采用 Node.js 原生 `node:vm` 沙箱：

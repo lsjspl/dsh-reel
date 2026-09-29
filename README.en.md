@@ -14,7 +14,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Node.js-%3E%3D20-339933?style=for-the-badge&logo=nodedotjs&logoColor=white" alt="Node.js" />
-  <a href="https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.5-rc.1"><img src="https://img.shields.io/badge/dsh-%3E%3D_v0.1.5--rc.1-0066FF?style=for-the-badge" alt="dsh >= v0.1.5-rc.1" /></a>
+  <a href="https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.0-rc.1"><img src="https://img.shields.io/badge/dsh-%3E%3D_v0.2.0--rc.1-0066FF?style=for-the-badge" alt="dsh >= v0.2.0-rc.1" /></a>
   <img src="https://img.shields.io/badge/Cordis-Plugin-18B26B?style=for-the-badge" alt="Cordis" />
   <img src="https://img.shields.io/badge/FFmpeg-Included-007808?style=for-the-badge&logo=ffmpeg&logoColor=white" alt="FFmpeg" />
   <img src="https://img.shields.io/badge/License-MIT-blue?style=for-the-badge" alt="License" />
@@ -39,7 +39,7 @@
 
 ## Overview
 
-**dsh-reel** adds an all-in-one media library and audio-visual streaming experience to [dsh Web](https://github.com/deepseek-ai) (requires dsh [v0.1.5-rc.1](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.5-rc.1) or later). Without spawning a secondary server process or opening new ports, simply configure local disk folders to instantly browse high-performance image galleries and stream video collections straight from your browser.
+**dsh-reel** adds an all-in-one media library and audio-visual streaming experience to [dsh Web](https://github.com/deepseek-ai) (requires dsh [v0.2.0-rc.1](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.0-rc.1) or later). Without spawning a secondary server process or opening new ports, simply configure local disk folders to instantly browse high-performance image galleries and stream video collections straight from your browser.
 
 Quick access URL:
 ```
@@ -109,7 +109,7 @@ Configure roots, cache paths, and global wallpapers straight from the graphical 
 
 ### Prerequisites
 
-- **dsh**: Minimum version [v0.1.5-rc.1](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.5-rc.1) or later
+- **dsh**: Minimum version [v0.2.0-rc.1](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.0-rc.1) or later (the settings client contract changed in 0.2.0; earlier versions are no longer compatible)
 - **Node.js**: `>= 20`
 
 ### Standard Install
@@ -145,18 +145,23 @@ dsh plugin --profile web remove dsh-reel
 
 ## Configuration
 
-Settings reside under the `reel` namespace in `settings.yaml`. Changes take effect hot without restarts.
+Settings live under the `reel` namespace in your profile's `cordis.patch.yml` — the same layer the settings panel writes.
 
 ### Method 1: Graphical Settings UI (Recommended)
 
-Navigate to **dsh Settings → Plugins → Plugin configuration → Reel Media Library**:
+Navigate to **the sidebar's Plugins panel → Installed → dsh-reel**; the configuration sits just below the package description:
 - **Media Directories**: Click "+ Add Directory" to mount local storage paths (e.g. `D:\Photos`, `E:\Videos`).
 - **Cache Directory**: Choose where poster frames and hover thumbnails are cached.
 - **Fullscreen Wallpaper**: Define default wallpaper image or video.
 
+These three fields are **hot**: saving them takes effect on the running service, with no `dsh web` restart.
+
+> [!NOTE]
+> The configuration lives on this bundle's page in the **Plugins panel**, not under Settings → Built-in plugins. The latter is a read-only inventory and offers no configuration.
+
 ### Method 2: YAML Configuration / `cordis.patch.yml`
 
-Configure in `cordis.patch.yml` or `settings.yaml`:
+Configure in `cordis.patch.yml`:
 
 ```yaml
 - id: reel
@@ -170,6 +175,9 @@ Configure in `cordis.patch.yml` or `settings.yaml`:
     # requireTrustedRequest: true           # LAN trust fence; false permits non-loopback clients
     # maxScanEntries: 20000                 # Max scanned items (50 ~ 200000)
 ```
+
+> [!NOTE]
+> `roots`, `cacheDir`, and `wallpaper` apply hot. `ffmpegPath`, `requireTrustedRequest`, and `maxScanEntries` steer process-level decisions, so changing them requires a `dsh web` restart.
 
 > [!NOTE]
 > - If `roots` is empty, fallback priority is: `REEL_ROOTS` environment variable (semicolon-separated) followed by `$DSH_HOME/media`.
