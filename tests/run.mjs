@@ -98,6 +98,9 @@ function fakeContext(options = {}) {
   const listeners = new Map()
   const logs = []
   const settings = options.withSettings === true ? fakeSettings() : null
+  // 载体只有一个：组合里的 webServer。插件用静态 `inject: ['webServer']` 声明它，
+  // 每个能显示浏览页的组合（web profile 与 Electron 桌面端都走同一套
+  // dsh-web-app bundle）都有这个服务，所以这里不再有「没有 webServer」的分支。
   const webServer = {
     port: 0,
     host: '127.0.0.1',
@@ -112,14 +115,17 @@ function fakeContext(options = {}) {
     webServer,
     // 设置页的页面策略按「插件实例」登记；假里头只是一个稳定的身份标记。
     fiber: { id: 'reel-fiber' },
+    // 就绪播报里读端口要等树稳定（真实现用 ctx.root.loader.await()）。假
+    // loader 立即 resolve —— 真实实现是「无待处理任务就返回」，语义一致。
+    root: { loader: { await: async () => {} } },
     logger: (name) => ({
       info: (...args) => logs.push(['info', name, args]),
       warn: (...args) => logs.push(['warn', name, args]),
       error: (...args) => logs.push(['error', name, args]),
       debug: () => {},
     }),
-    // 插件用 ctx.get 读服务，而不是 ctx.webServer 访问器：这样即使组合里
-    // 少写了 row 级 inject，也不会在第一个请求上抛 "without inject"。
+    // 插件用 ctx.get 读服务，而不是 ctx.webServer 访问器：路由在这个 fiber 里
+    // 注册，两种写法都行，但 ctx.get 不依赖 row 是怎么挂的。
     get: (serviceName) => {
       if (serviceName === 'webServer') return webServer
       if (serviceName === 'settings') return settings?.service
@@ -154,6 +160,10 @@ function fakeContext(options = {}) {
     settings,
     emit: (event, ...args) => (listeners.get(event) ?? []).forEach((listener) => listener(...args)),
     dispose: () => disposers.reverse().forEach((dispose) => dispose()),
+    // 路由安装现在要等选择载体的异步步骤（真实插件等 loader.await()），所以
+    // 挂载后必须让它落地再断言。setImmediate 比裸 Promise.resolve() 稳：无论
+    // 中间串了几个微任务都会排空。
+    ready: () => new Promise((settle) => setImmediate(settle)),
   }
 }
 
@@ -188,8 +198,10 @@ apply(harness.ctx, entry.value)
 const server = createServer(dispatch(harness.routes))
 await new Promise((settle) => server.listen(0, '127.0.0.1', settle))
 const origin = `http://127.0.0.1:${server.address().port}`
+// 路由是同步注册的（静态 inject 保证 webServer 已就绪），只有就绪日志里的端口
+// 要等 webserver 绑定，所以先填好端口再排空就绪播报。
 harness.ctx.webServer.port = server.address().port
-harness.emit('internal/ready')
+await harness.ready()
 
 /** 发一个请求，返回状态、响应头与字节。 */
 async function request(path, options = {}) {
@@ -209,6 +221,13 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
   checkEqual('session 报告一个根目录', payload.roots.length, 1)
   checkEqual('根目录路径正确', payload.roots[0].path, mediaRoot)
   check('capabilities 存在', typeof payload.capabilities?.thumbnails === 'boolean')
+
+  // 绝对地址：设置卡片的「在浏览器里打开」和地址展示都读它。必须是绝对 http，
+  // 且用请求自己的 Host —— 桌面端靠这一点拿到 127.0.0.1:19387 而不是
+  // `dsh-app://app`（那个协议外壳会直接拒绝）。
+  checkEqual('session 报告浏览页绝对地址', payload.url, `http://127.0.0.1:${server.address().port}/reel`)
+  check('绝对地址是 http 且以 /reel 结尾',
+    payload.url.startsWith('http://') && payload.url.endsWith('/reel'))
 }
 
 {
@@ -483,6 +502,7 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
 
   const libHarness = fakeContext()
   apply(libHarness.ctx, Config['~standard'].validate({ roots: [rootA, rootB], requireTrustedRequest: true }).value)
+  await libHarness.ready()
   const libServer = createServer(dispatch(libHarness.routes))
   await new Promise((settle) => libServer.listen(0, '127.0.0.1', settle))
   const libOrigin = `http://127.0.0.1:${libServer.address().port}`
@@ -611,6 +631,7 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
     ...(ffmpegUsable ? { ffmpegPath: ffmpegBinary } : {}),
     requireTrustedRequest: true,
   }).value)
+  await transcodeHarness.ready()
   const transcodeServer = createServer(dispatch(transcodeHarness.routes))
   await new Promise((settle) => transcodeServer.listen(0, '127.0.0.1', settle))
   const transcodeOrigin = `http://127.0.0.1:${transcodeServer.address().port}`
@@ -692,6 +713,7 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
   const settingsHarness = fakeContext({ withSettings: true })
   const settingsEntry = Config['~standard'].validate({ roots: [mediaRoot], requireTrustedRequest: true })
   apply(settingsHarness.ctx, settingsEntry.value)
+  await settingsHarness.ready()
 
   // configure({ auto: false }) 是「这一页由我自己画」的声明；不声明的话宿主会
   // 自动生成一张表单，插件自带的浏览器半边就没有位置了。
@@ -703,6 +725,7 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
   // 没有设置服务时插件必须照常工作，且不能因此起不来。
   const bareHarness = fakeContext()
   apply(bareHarness.ctx, Config['~standard'].validate({ roots: [mediaRoot] }).value)
+  await bareHarness.ready()
   check('没有设置服务时也能挂载', bareHarness.routes.exact.has('/reel/api/session'))
   bareHarness.dispose()
 
@@ -730,7 +753,12 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
   check('归一化后仍有 Config', plugin.Config !== undefined)
   check('归一化后 Config 带 toJSON（describe 的门禁）',
     plugin.Config !== undefined && 'toJSON' in plugin.Config)
-  check('归一化后仍有 inject', Array.isArray(plugin.inject) && plugin.inject.includes('webServer'))
+  check('归一化后仍有 inject 声明', Array.isArray(plugin.inject))
+  // inject 必须是被服务列表里的 webServer：插件只依赖组合里那一个 HTTP 载体，
+  // 而这个服务在 web profile 与 Electron 桌面端都存在（后者跑同一套 web bundle）。
+  // 曾经这里声明为空、改成运行时二选一，是因为误信「桌面端没有 webServer」；
+  // 实测桌面端 http://127.0.0.1:19387/reel 就是挂在 dsh 自己的 webServer 上。
+  checkEqual('inject 声明 webServer', plugin.inject.join(','), 'webServer')
 
   const settingsServer = createServer(dispatch(settingsHarness.routes))
   await new Promise((settle) => settingsServer.listen(0, '127.0.0.1', settle))
@@ -946,7 +974,7 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
   // 落点警告：cacheDir 在配置根之内要警告一次，之外必须安静。
   const warnHarness = fakeContext({ withSettings: true })
   apply(warnHarness.ctx, Config['~standard'].validate({ roots: [mediaRoot], cacheDir: mediaRoot, requireTrustedRequest: true }).value)
-  warnHarness.emit('internal/ready')
+  await warnHarness.ready()
   check('cacheDir 在根内时给出警告',
     warnHarness.logs.some(([level, , args]) => level === 'warn' && String(args?.[0]).includes('inside a configured root')),
     JSON.stringify(warnHarness.logs))
@@ -954,7 +982,7 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
 
   const quietHarness = fakeContext({ withSettings: true })
   apply(quietHarness.ctx, Config['~standard'].validate({ roots: [mediaRoot], cacheDir: `${mediaRoot}-cache`, requireTrustedRequest: true }).value)
-  quietHarness.emit('internal/ready')
+  await quietHarness.ready()
   check('cacheDir 在根外不警告',
     !quietHarness.logs.some(([level]) => level === 'warn'),
     JSON.stringify(quietHarness.logs))

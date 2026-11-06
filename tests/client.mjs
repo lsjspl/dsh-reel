@@ -42,6 +42,12 @@ globalThis.document = {
 }
 globalThis.localStorage = { getItem: () => null }
 globalThis.__ModuleLoader__ = { load: (definition) => { registered = definition } }
+// 卡片会去问宿主拿绝对地址（`/reel/api/session` 的 `url` 字段）。桩里返回一个
+// 固定地址，用来断言「打开 Reel」用的是它、而不是相对的 /reel。
+globalThis.fetch = async () => ({
+  ok: true,
+  json: async () => ({ url: 'http://127.0.0.1:19387/reel' }),
+})
 
 const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
 await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`)
@@ -111,11 +117,28 @@ const primitives = {
   },
 }
 
+// ── 极简 hook 运行时 ───────────────────────────────────────────────────────
+//
+// 卡片用 useState 保存「宿主报来的绝对地址」与「已复制」两个状态，用 useEffect
+// 在挂载后去问一次宿主。这里按 hook 序号存槽位，渲染前把序号归零；effect 立即
+// 执行（副作用是发起 fetch，Promise 自己会 resolve）。
+let hookStates = []
+let hookIndex = 0
+
 const react = {
   createElement: (type, props, ...children) => ({
     type,
     props: { ...(props ?? {}), children: children.length <= 1 ? children[0] : children },
   }),
+  useState: (initial) => {
+    const index = hookIndex++
+    if (!(index in hookStates)) hookStates[index] = typeof initial === 'function' ? initial() : initial
+    return [hookStates[index], (value) => { hookStates[index] = value }]
+  },
+  useEffect: (effect) => {
+    hookIndex += 1
+    effect()
+  },
 }
 
 // ── 加载工厂 ───────────────────────────────────────────────────────────────
@@ -190,6 +213,32 @@ checkEqual('key 是 bundle 包名', slotEntries[0]?.options.key, 'dsh-reel')
 checkEqual('locale 命名空间', slotEntries[0]?.options.locale, 'settings.plugins.reel')
 check('注册了组件', typeof slotEntries[0]?.component === 'function')
 
+// ── 词典：zh / en 的键必须一致 ──────────────────────────────────────────────
+//
+// client.js 里的 zh / en 是两个手写对象。漏一处就会在某种语言下静默回退到 key
+// 本身（界面上直接显示 `openReelTitle` 这种字样），所以两边键集必须相同。
+{
+  const dicts = []
+  const captureCtx = {
+    ...ctx,
+    locale: {
+      ...ctx.locale,
+      register: (ns, dict) => { dicts.push({ ns, dict }); return () => {} },
+    },
+  }
+  mod.apply(captureCtx)
+  const registered = dicts.find((entry) => entry.ns === 'settings.plugins.reel')
+  check('注册了本卡片的词典', registered !== undefined)
+  const zhKeys = Object.keys(registered?.dict?.zh ?? {}).sort()
+  const enKeys = Object.keys(registered?.dict?.en ?? {}).sort()
+  checkEqual('卡片词典 zh / en 键一致', zhKeys.join(','), enKeys.join(','))
+  check('zh 词典非空', zhKeys.length > 0)
+  // 新增的几个键两边都要有。
+  for (const key of ['openReel', 'openReelTitle', 'address', 'copy', 'copied']) {
+    check(`词典含 ${key}`, zhKeys.includes(key) && enKeys.includes(key))
+  }
+}
+
 // whileServed 以命名空间名单为准；名字写错就永远不触发。
 check('命名空间名单含 reel', mod.inject.includes('configForms'))
 
@@ -205,13 +254,20 @@ check('快照可供组件读取', typeof snapshot === 'object')
 check('快照带表单外壳字段', typeof snapshot.writable === 'boolean' && typeof snapshot.dirty === 'boolean')
 checkEqual('快照带 roots 字段', typeof snapshot.roots?.text, 'string')
 
-const render = (overrides = {}) => entry.component({
-  view: 'page',
-  t: (key) => key,
-  ...face,
-  ...overrides,
-  useReelCard: (selector) => selector(face.hooks.reelCard.getSnapshot()),
-})
+const render = (overrides = {}) => {
+  hookIndex = 0
+  try {
+    return entry.component({
+      view: 'page',
+      t: (key) => key,
+      ...face,
+      ...overrides,
+      useReelCard: (selector) => selector(face.hooks.reelCard.getSnapshot()),
+    })
+  } finally {
+    hookIndex = 0
+  }
+}
 
 // summary 视图只回一行文案（卡片标题下的说明）。
 const summary = entry.component({
@@ -224,7 +280,34 @@ checkEqual('summary 视图返回说明文案', summary, 'description')
 
 const tree = render()
 checkEqual('卡片根节点是 SettingsForm', typeof tree.type, 'function')
-checkEqual('SettingsForm 收到 4 个子节点', tree.props.children.length, 4)
+checkEqual('SettingsForm 收到 5 个子节点', tree.props.children.length, 5)
+
+// 地址来自一次 `/reel/api/session` 查询，所以首帧还是同源回退值，等它落定后
+// 再渲染一次（真 React 是 setState 触发重渲染，这里手动重渲染等价）。
+checkEqual('首帧先用同源回退地址', tree.props.children[0].props.children[0].props.href, '/reel')
+await new Promise((settle) => setTimeout(settle, 0))
+const settled = render()
+
+// ── 「打开 Reel」必须是一个绝对 http 链接 ──────────────────────────────────
+//
+// 这是桌面端那个 bug 的修复点。原来用 `window.open('/reel')`：桌面窗口的 origin
+// 是 `dsh-app://app`，相对路径解析成 `dsh-app://app/reel`，而外壳的
+// `setWindowOpenHandler` 只把 `http:`/`https:` 交给系统浏览器，其余一律 deny，
+// 于是点了毫无反应（GitHub 那条 `https://` 链接却能开，差别就在协议）。
+//
+// 现在：链接的 href 来自宿主 `/reel/api/session` 报回来的绝对地址。
+const openLink = settled.props.children[0].props.children[0]
+checkEqual('打开 Reel 是一个 <a> 链接', openLink.type, 'a')
+checkEqual('链接用的是宿主报来的绝对地址', openLink.props.href, 'http://127.0.0.1:19387/reel')
+check('地址是 http（外壳才会转交系统浏览器）', String(openLink.props.href).startsWith('http://'))
+check('不再用 window.open 打开相对路径', !JSON.stringify(settled).includes('window.open'))
+
+// 网址要显式展示出来，并带一个复制按钮。
+const addressRow = settled.props.children[1]
+checkEqual('地址行 class', addressRow.props.className, 'reel_address')
+checkEqual('地址行展示绝对地址',
+  addressRow.props.children[1].props.children, 'http://127.0.0.1:19387/reel')
+checkEqual('地址行有复制按钮', addressRow.props.children[2].type, 'button')
 
 // 表单外壳：只读状态必须来自宿主，而不是组件自己猜的。
 checkEqual('可写状态透传给表单', tree.props.state.writable, true)

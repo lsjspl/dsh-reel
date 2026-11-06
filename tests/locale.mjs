@@ -101,6 +101,48 @@ if (typeof iconRel === 'string') {
     `${iconSubpath} 不在 ${JSON.stringify(Object.keys(manifest.exports ?? {}))}`)
 }
 
+// ── peer 范围必须自洽 ──────────────────────────────────────────────────────
+//
+// dsh 的兼容性门禁会对每个 `@deepseek-ai/dsh*` peer 做 semver 判定，不满足就
+// 跳过整个 bundle（这正是本项目最初那个 "skipping profile bundle" 的来源）。
+// 这里不联网：只检查声明的范围本身合法、且上界能容纳同一 minor 的后续 rc。
+//
+// 用宿主里那份 semver（本地已有，无需联网），缺失则跳过。
+{
+  let semver = null
+  try {
+    const { createRequire } = await import('node:module')
+    const require_ = createRequire(join(root, 'package.json'))
+    semver = require_('@deepseek-ai/dsh/node_modules/semver')
+  } catch {
+    try {
+      const { createRequire } = await import('node:module')
+      semver = createRequire(join(root, 'package.json'))(join(process.env.APPDATA ?? '', 'npm', 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', 'semver'))
+    } catch {
+      semver = null
+    }
+  }
+  if (semver === null) {
+    check('（跳过）找不到 semver，未校验 peer 范围', true)
+  } else {
+    const peers = manifest.peerDependencies ?? {}
+    check('声明了 peerDependencies', Object.keys(peers).length > 0)
+    for (const [name, range] of Object.entries(peers)) {
+      // 每个范围必须能用当前 runtime 版本解析通过。
+      let ok = false
+      try { ok = semver.satisfies('0.2.0-rc.1', range, { includePrerelease: true }) } catch { ok = false }
+      check(`peer ${name} 容纳 0.2.0-rc.1`, ok, range)
+      // 同一 minor 的后续 rc（如 rc.2/rc.3）也必须被容纳，否则每个 rc 都要改
+      // 一次 peer 范围——上界应当定在下一个 minor，而不是下一个 patch。
+      for (const next of ['0.2.0-rc.2', '0.2.0-rc.3', '0.2.0']) {
+        let fits = false
+        try { fits = semver.satisfies(next, range, { includePrerelease: true }) } catch { fits = false }
+        check(`peer ${name} 容纳 ${next}`, fits, range)
+      }
+    }
+  }
+}
+
 // ── 汇编 ───────────────────────────────────────────────────────────────────
 
 console.log(`\n通过 ${passes.length} 项`)

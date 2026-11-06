@@ -154,6 +154,8 @@ dsh plugin --profile web remove dsh-reel
 - **缓存目录**：指定视频封面帧与悬停预览的缓存磁盘位置。
 - **全屏壁纸**：配置全站默认壁纸（可填文件绝对路径或库相对 key）。
 
+卡片顶部还有**「在浏览器里打开」**按钮和一行**浏览页地址**（带复制按钮）。地址是绝对 http URL，来自 dsh 实际服务的端口，因此桌面端与 Web 端显示的都不一样、也都点得开。
+
 这三个字段是**热生效**的：保存后立即作用于正在运行的服务，不需要重启 `dsh web`。
 
 > [!NOTE]
@@ -179,7 +181,23 @@ dsh plugin --profile web remove dsh-reel
 > [!NOTE]
 > - 当 `roots` 为空时，将依次回退至环境变量 `REEL_ROOTS`（多路径用 `;` 分隔）以及 `$DSH_HOME/media`。
 > - `cacheDir` 请务必放置在媒体目录之外，避免生成的缩略图文件被误扫入媒体库中。
-> - `roots` / `cacheDir` / `wallpaper` 改完即热生效；`ffmpegPath` / `requireTrustedRequest` / `maxScanEntries` 属于进程级决策，改动需要重启 `dsh web`。
+> - `roots` / `cacheDir` / `wallpaper` 改完即热生效；`ffmpegPath` / `requireTrustedRequest` / `maxScanEntries` 属于进程级决策，改动需要重启。
+
+### 关于端口
+
+**插件没有自己的端口，也不需要配。** 浏览页挂在 dsh 自己的 `webServer` 上，和 dsh 的界面同端口、同源：
+
+| 运行环境 | 地址 |
+|---|---|
+| **Web**（`dsh web`） | `http://127.0.0.1:<dsh 的 --port>/reel`，默认 `3080` |
+| **桌面端**（Electron） | `http://127.0.0.1:19387/reel`（端口由 dsh 桌面端固定传入） |
+
+桌面端不是例外：它通过 `dsh-desktop-host` 启动**同一套 web bundle**（`@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-web-app`），并向它传入 `--port 19387`，因此 `webServer` 一样存在，浏览页一样挂在上面。要换桌面端端口，改的是**整个桌面应用的端口**，不是本插件的配置——在 `profiles/desktop/cordis.patch.yml` 里覆盖 `webserver` 行即可。
+
+实际地址以设置卡片上显示的那一行为准：`/reel/api/session` 会按**请求实际到达的 Host** 报告绝对地址，所以不管从哪个地址访问 dsh，卡片给出的都是那个地址。
+
+> [!NOTE]
+> **为什么卡片要用绝对地址打开**：桌面端的页面 origin 是 `dsh-app://app`，而不是 `http://127.0.0.1:19387`。相对路径 `/reel` 在这里会解析成 `dsh-app://app/reel`，桌面外壳只把 `http:`/`https:` 导航交给系统浏览器，其余协议一律拒绝——点了会毫无反应。绝对 http 地址因此和卡片里那条 GitHub 链接走同一条路。
 
 ---
 

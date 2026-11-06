@@ -6,13 +6,13 @@
 # into the live Loader tree. Delete this row (or set `disabled: true`) to take
 # the viewer out of the tree without uninstalling anything.
 #
-# `inject: [webServer]` must be declared at the ROW level, not only in the
-# plugin module: a function plugin's `export const inject` gates its own body,
-# but the HTTP handlers it registers run outside that body, and the first
-# `ctx.webServer` read inside one throws "cannot get property without inject".
-# A profile patch that restates this row's `config` replaces config keys only,
-# so `inject` survives; a patch that omits `inject` breaks the routes, which is
-# why the plugin also reads the service through `ctx.get`.
+# `inject: [webServer]` is declared at the ROW level as well as in the plugin
+# module, so the row's wiring is explicit rather than inferred. `webServer`
+# exists on every browser-capable composition: the web profile and the Electron
+# desktop client both boot `@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-web-app`
+# (the desktop host passes `--port 19387`), so the viewer mounts on the dsh port
+# in either environment. A profile without that bundle (acp / headless / sdk)
+# has no browser surface to serve it into.
 - insert:
     - id: reel
       name: 'dsh-reel'

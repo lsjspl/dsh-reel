@@ -1,6 +1,6 @@
 {
   "name": "dsh-reel",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "type": "module",
   "license": "MIT",
   "description": "Media library for the dsh web UI: browse configured local directories as a grid or list, open images in a viewer, and play videos in a page-fullscreen player with swipe navigation, order/random playlists and a fullscreen wallpaper.",
@@ -48,7 +48,7 @@
     "README.en.md"
   ],
   "scripts": {
-    "test": "node tests/run.mjs && node tests/client.mjs && node tests/locale.mjs && node tests/group-tree.mjs && node tests/crumbs.mjs",
+    "test": "node tests/run.mjs && node tests/viewer-url.mjs && node tests/real-cordis.mjs && node tests/client.mjs && node tests/locale.mjs && node tests/group-tree.mjs && node tests/crumbs.mjs",
     "test:live": "node tests/live.mjs"
   },
   "dsh": {

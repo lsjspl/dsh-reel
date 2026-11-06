@@ -156,6 +156,8 @@ Navigate to **the sidebar's Plugins panel → Installed → dsh-reel**; the conf
 
 These three fields are **hot**: saving them takes effect on the running service, with no `dsh web` restart.
 
+The card also carries an **Open in browser** button and a **viewer address** row with a copy button. The address is an absolute http URL taken from the port dsh is actually serving on, so it differs between the desktop and web profiles — and opens in both.
+
 > [!NOTE]
 > The configuration lives on this bundle's page in the **Plugins panel**, not under Settings → Built-in plugins. The latter is a read-only inventory and offers no configuration.
 
@@ -182,6 +184,22 @@ Configure in `cordis.patch.yml`:
 > [!NOTE]
 > - If `roots` is empty, fallback priority is: `REEL_ROOTS` environment variable (semicolon-separated) followed by `$DSH_HOME/media`.
 > - Keep `cacheDir` outside of your media roots to prevent cache files from cluttering your library.
+
+### About the port
+
+**This plugin has no port of its own, and none to configure.** The viewer mounts on dsh's own `webServer`, so it shares the dsh interface's port and origin:
+
+| Environment | Address |
+|---|---|
+| **Web** (`dsh web`) | `http://127.0.0.1:<dsh's --port>/reel`, `3080` by default |
+| **Desktop** (Electron) | `http://127.0.0.1:19387/reel` (the port is fixed by the dsh desktop app) |
+
+The desktop client is not an exception: it boots the **same web bundle list** (`@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-web-app`) through `dsh-desktop-host`, passing `--port 19387`, so `webServer` exists there too and the viewer mounts on it. To change the desktop port you change the **whole desktop application's** port, not this plugin's config — override the `webserver` row in `profiles/desktop/cordis.patch.yml`.
+
+Trust the address the settings card shows: `/reel/api/session` reports an absolute URL derived from the `Host` the request actually arrived on, so whatever address you reached dsh at is the address the card hands you.
+
+> [!NOTE]
+> **Why the card opens an absolute URL**: the desktop page origin is `dsh-app://app`, not `http://127.0.0.1:19387`. A relative `/reel` therefore resolves to `dsh-app://app/reel`, and the desktop shell only hands `http:`/`https:` navigation to the system browser — every other scheme is denied, so clicking would do nothing at all. An absolute http URL takes the same path as the card's GitHub link.
 
 ---
 
