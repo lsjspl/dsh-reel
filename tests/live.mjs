@@ -59,9 +59,9 @@ console.log(`  能力：ffmpeg=${session.capabilities.ffmpeg ?? '(未找到)'} p
  * 不能写死 fixture 路径：这套用例是要打在「任何一份真实媒体库」上的，
  * 而真实库的根目录常常只是一层分类目录。先看根，根没有媒体就下沉一层。
  */
-let targetKey = 'r0'
+let targetKey = `r${session.roots[0].index}`
 let targetRel = ''
-let listing = json(await request('/reel/api/list?k=r0'))
+let listing = json(await request(`/reel/api/list?k=${targetKey}`))
 if ((listing.files ?? []).length === 0) {
   for (const folder of (listing.folders ?? []).slice(0, 20)) {
     const candidate = json(await request(`/reel/api/list?k=${encodeURIComponent(folder.key)}`))
@@ -95,7 +95,7 @@ if (withSubs !== undefined) {
   console.log('  该目录没有侧车字幕，跳过字幕断言')
 }
 
-const scan = json(await request(`/reel/api/scan?k=${encodeURIComponent(keyOf(0, ''))}&kinds=image,video&limit=100&depth=6`))
+const scan = json(await request(`/reel/api/scan?k=${encodeURIComponent(keyOf(session.roots[0].index, ''))}&kinds=image,video&limit=100&depth=6`))
 check('递归扫描找到媒体', scan.items.length >= 3, `实际 ${scan.items.length}`)
 check('递归扫描不下钻 node_modules 之外的隐藏目录', scan.items.every((item) => !String(item.rel).startsWith('.testhome/')))
 

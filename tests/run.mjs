@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { apply, Config } from '../lib/reel.js'
+import { mediaKeyOf } from '../lib/addressing.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const failures = []
@@ -210,7 +211,7 @@ async function request(path, options = {}) {
   return { status: response.status, headers: response.headers, buffer }
 }
 
-const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURIComponent).join('/')}`}`
+const keyOf = (rel) => mediaKeyOf(mediaRoot, rel)
 
 // ── 接口测试 ───────────────────────────────────────────────────────────────
 
@@ -266,7 +267,7 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
 // 服务端如果只认显式的 r0，首屏就会 404——而所有手写 key 的测试都发现不了。
 
 {
-  const explicit = JSON.parse((await request(`/reel/api/list?k=r0`)).buffer.toString('utf8'))
+  const explicit = JSON.parse((await request(`/reel/api/list?k=${keyOf('')}`)).buffer.toString('utf8'))
   const empty = await request('/reel/api/list?k=')
   checkEqual('list 空 key 不 404', empty.status, 200)
   const emptyPayload = JSON.parse(empty.buffer.toString('utf8'))
@@ -276,7 +277,7 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
   const noParam = await request('/reel/api/list')
   checkEqual('list 完全不带 key 也是 200', noParam.status, 200)
 
-  const scanExplicit = JSON.parse((await request('/reel/api/scan?k=r0&limit=50')).buffer.toString('utf8'))
+  const scanExplicit = JSON.parse((await request(`/reel/api/scan?k=${keyOf('')}&limit=50`)).buffer.toString('utf8'))
   const scanEmpty = await request('/reel/api/scan?k=&kinds=image,video&limit=50&depth=10')
   checkEqual('scan 空 key 不 404', scanEmpty.status, 200)
   const scanPayload = JSON.parse(scanEmpty.buffer.toString('utf8'))
@@ -412,10 +413,10 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
 // ── 包含性与安全性 ─────────────────────────────────────────────────────────
 
 {
-  const escape = await request(`/reel/stream?k=${encodeURIComponent(`r0/../secret.mp4`)}`)
+  const escape = await request(`/reel/stream?k=${encodeURIComponent(keyOf('../secret.mp4'))}`)
   check('拒绝 .. 逃逸', escape.status === 404 || escape.status === 400, `实际 ${escape.status}`)
 
-  const encodedEscape = await request(`/reel/stream?k=${encodeURIComponent('r0/%2e%2e/secret.mp4')}`)
+  const encodedEscape = await request(`/reel/stream?k=${encodeURIComponent(`${keyOf('')}/%2e%2e/secret.mp4`)}`)
   check('拒绝编码后的 .. 逃逸', encodedEscape.status === 404 || encodedEscape.status === 400, `实际 ${encodedEscape.status}`)
 
   const badRoot = await request(`/reel/stream?k=${encodeURIComponent('r9/a.mp4')}`)
@@ -424,7 +425,7 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
   const noKey = await request('/reel/stream')
   checkEqual('缺少 key 被拒', noKey.status, 404)
 
-  const traversalList = await request(`/reel/api/list?k=${encodeURIComponent('r0/../../')}`)
+  const traversalList = await request(`/reel/api/list?k=${encodeURIComponent(keyOf('../../'))}`)
   checkEqual('列目录也挡住逃逸', traversalList.status, 404)
 
   const symlink = await request(`/reel/stream?k=${encodeURIComponent(keyOf('逃逸链接/secret.mp4'))}`)
@@ -472,12 +473,12 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
   checkEqual('session 报告 revision', session.revision, 0)
 
   // 图片缩略图：有 ffmpeg 时 /thumb 对图片返回缩小的 JPEG，列表条目带 thumbUrl。
-  const thumb = await request('/reel/thumb?k=r0/b.jpg')
+  const thumb = await request(`/reel/thumb?k=${encodeURIComponent(keyOf('b.jpg'))}`)
   if (session.capabilities.thumbnails === true) {
     checkEqual('图片缩略图 200', thumb.status, 200)
     check('图片缩略图是 JPEG', String(thumb.headers.get('content-type')).startsWith('image/jpeg'), String(thumb.headers.get('content-type')))
     check('图片缩略图有内容', thumb.buffer.length > 100)
-    const listed = JSON.parse((await request('/reel/api/list?k=r0')).buffer.toString('utf8'))
+    const listed = JSON.parse((await request(`/reel/api/list?k=${keyOf('')}`)).buffer.toString('utf8'))
     const image = (listed.files ?? []).find((file) => file.name === 'b.jpg')
     check('图片条目带 thumbUrl', typeof image?.thumbUrl === 'string', JSON.stringify(image))
   } else {
@@ -522,16 +523,16 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
   // 而不是把各根的下一层混在一起当成库的子文件夹——那样会凭空跳过一层。
   const libFolders = list.payload.folders
   checkEqual('库列出配置的两个根', libFolders.map((folder) => folder.name).join(','), '库 A,库 B')
-  checkEqual('库列出的根键就是 r0 / r1', libFolders.map((folder) => folder.key).join(','), 'r0,r1')
+  checkEqual('库列出的根键就是 r0 / r1', libFolders.map((folder) => folder.key).join(','), `${mediaKeyOf(rootA)},${mediaKeyOf(rootB)}`)
   check('库列出的根各带直接媒体数', libFolders.every((folder) => folder.mediaCount === 1), JSON.stringify(libFolders))
   const topNames = list.payload.files.map((file) => file.name).sort()
   check('库合并两个根的顶层文件', topNames.join(',') === 'clip.mp4,photo.jpg', topNames.join(','))
   checkEqual('库的文件总数', list.payload.fileCount, 2)
 
   // 库列出的根就是可以进去的那一层，键直接可用；它的面包屑从库起步。
-  const rootBListing = await callLib('/reel/api/list?k=r1')
+  const rootBListing = await callLib(`/reel/api/list?k=${mediaKeyOf(rootB)}`)
   checkEqual('库里列出的根能直接打开', rootBListing.status, 200)
-  checkEqual('根的面包屑是「库 › 根」', rootBListing.payload.crumbs.map((crumb) => crumb.key).join(','), 'lib,r1')
+  checkEqual('根的面包屑是「库 › 根」', rootBListing.payload.crumbs.map((crumb) => crumb.key).join(','), `lib,${mediaKeyOf(rootB)}`)
   checkEqual('根的上一级是库', rootBListing.payload.parent, 'lib')
   const videoFolder = rootBListing.payload.folders.find((folder) => folder.name === '视频')
   const inside = await callLib(`/reel/api/list?k=${encodeURIComponent(videoFolder.key)}`)
@@ -541,7 +542,7 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
   checkEqual('库扫描 200', scan.status, 200)
   const scanNames = scan.payload.items.map((item) => item.name).sort()
   check('库扫描覆盖所有根', scanNames.join(',') === 'clip.mp4,deep.mp4,photo.jpg', scanNames.join(','))
-  check('库扫描的键保留各自的根前缀', scan.payload.items.every((item) => /^r[01]\//.test(item.key)))
+  check('库扫描的键保留各自的根前缀', scan.payload.items.every((item) => [mediaKeyOf(rootA), mediaKeyOf(rootB)].some((key) => item.key.startsWith(`${key}/`))))
   checkEqual('库扫描的根标签', scan.payload.root.label, '库')
   checkEqual('库扫描没有相对路径', scan.payload.rel, '')
 
@@ -577,21 +578,21 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
     return session.wallpaper
   }
 
-  const byKey = await serveWithWallpaper('r0/wall.jpg')
-  checkEqual('按 key 配的壁纸解析出条目', byKey?.key, 'r0/wall.jpg')
+  const byKey = await serveWithWallpaper(mediaKeyOf(wallRoot, 'wall.jpg'))
+  checkEqual('按 key 配的壁纸解析出条目', byKey?.key, mediaKeyOf(wallRoot, 'wall.jpg'))
   checkEqual('壁纸报告种类', byKey?.kind, 'image')
 
   // 视频壁纸要有可播的地址（图片没有 streamUrl，客户端按 key 拼 /reel/stream，
   // 和卡片走的是同一条路）。这条就是「配一段视频当壁纸」能不能成立的关键。
-  const videoWall = await serveWithWallpaper('r0/wall.mp4')
-  checkEqual('视频壁纸解析出条目', videoWall?.key, 'r0/wall.mp4')
+  const videoWall = await serveWithWallpaper(mediaKeyOf(wallRoot, 'wall.mp4'))
+  checkEqual('视频壁纸解析出条目', videoWall?.key, mediaKeyOf(wallRoot, 'wall.mp4'))
   check('视频壁纸带可直接用的流地址', String(videoWall?.streamUrl).startsWith('/reel/stream'), String(videoWall?.streamUrl))
 
   const byPath = await serveWithWallpaper(join(wallRoot, 'wall.jpg'))
-  checkEqual('按绝对路径配的壁纸解析成同一个 key', byPath?.key, 'r0/wall.jpg')
+  checkEqual('按绝对路径配的壁纸解析成同一个 key', byPath?.key, mediaKeyOf(wallRoot, 'wall.jpg'))
 
   checkEqual('没配壁纸时是 null', await serveWithWallpaper(''), null)
-  checkEqual('指向不存在的文件时是 null', await serveWithWallpaper('r0/nope.jpg'), null)
+  checkEqual('指向不存在的文件时是 null', await serveWithWallpaper(mediaKeyOf(wallRoot, 'nope.jpg')), null)
   checkEqual('目录外的绝对路径是 null', await serveWithWallpaper(join(workspace, 'outside.jpg')), null)
 }
 
@@ -646,10 +647,10 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
 
   const unknown = await callTranscode('/reel/transcode?k=r9/x.avi')
   checkEqual('未知目录的转码请求 404', unknown.status, 404)
-  const notMedia = await callTranscode(`/reel/transcode?k=${encodeURIComponent('r0/note.txt')}`)
+  const notMedia = await callTranscode(`/reel/transcode?k=${encodeURIComponent(mediaKeyOf(sourceRoot, 'note.txt'))}`)
   checkEqual('非音视频的转码请求 415', notMedia.status, 415)
 
-  const broken = await callTranscode(`/reel/transcode?k=${encodeURIComponent('r0/broken.avi')}`)
+  const broken = await callTranscode(`/reel/transcode?k=${encodeURIComponent(mediaKeyOf(sourceRoot, 'broken.avi'))}`)
   if (session.capabilities.transcode !== true) {
     checkEqual('没有 ffmpeg 时转码 503', broken.status, 503)
   } else {
@@ -657,7 +658,7 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
   }
 
   if (session.capabilities.transcode === true && ffmpegUsable) {
-    const stream = await callTranscode(`/reel/transcode?k=${encodeURIComponent('r0/clip.avi')}`)
+    const stream = await callTranscode(`/reel/transcode?k=${encodeURIComponent(mediaKeyOf(sourceRoot, 'clip.avi'))}`)
     check('AVI 边转边播 200', stream.status === 200, `实际 ${stream.status}：${stream.buffer.toString('utf8').slice(0, 160)}`)
     if (stream.status === 200) {
       checkEqual('转码流是 MP4', stream.headers.get('content-type'), 'video/mp4')
@@ -666,11 +667,11 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
       check('是分片 MP4（带 moof）', stream.buffer.includes(Buffer.from('moof')))
       checkEqual('边转边发的流没有固定长度', stream.headers.get('content-length'), null)
       // 拖动进度条走的就是这条路：从 t 秒重新开一条流。
-      const later = await callTranscode(`/reel/transcode?k=${encodeURIComponent('r0/clip.avi')}&t=1`)
+      const later = await callTranscode(`/reel/transcode?k=${encodeURIComponent(mediaKeyOf(sourceRoot, 'clip.avi'))}&t=1`)
       check('从中间开始也能出流（&t=）', later.status === 200 && later.buffer.length > 0, `实际 ${later.status}`)
       check('&t= 拿到的不是同一段内容', later.status === 200 && !later.buffer.equals(stream.buffer))
     }
-    const listing = JSON.parse((await callTranscode('/reel/api/list?k=r0')).buffer.toString('utf8'))
+    const listing = JSON.parse((await callTranscode(`/reel/api/list?k=${mediaKeyOf(sourceRoot)}`)).buffer.toString('utf8'))
     const clip = listing.files.find((item) => item.name === 'clip.avi')
     check('视频条目带 transcodeUrl', /\/reel\/transcode\?k=/.test(clip?.transcodeUrl ?? ''), JSON.stringify(clip))
   }
@@ -689,10 +690,25 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
   checkEqual('session 拒绝 DELETE', del.status, 405)
 }
 
+{
+  const search = async path => JSON.parse((await request(path)).buffer.toString('utf8'))
+  let result = await search('/reel/api/search?k=lib&refresh=1&q=%E5%AD%90%E7%9B%AE%E5%BD%95%20e.webm&kinds=video')
+  for (let i = 0; result.indexing && i < 100; i += 1) {
+    await new Promise(done => setTimeout(done, 10))
+    result = await search('/reel/api/search?k=lib&q=%E5%AD%90%E7%9B%AE%E5%BD%95%20e.webm&kinds=video')
+  }
+  checkEqual('全库搜索路由返回完整路径匹配', result.items?.[0]?.name, 'e.webm')
+  checkEqual('搜索结果携带完整数量', result.total, 1)
+  check('搜索页只描述返回文件的媒体地址', result.items?.[0]?.streamUrl?.startsWith('/reel/stream?'))
+  if (result.items?.[0]?.transcodeUrl) check('视频结果提供按文件版本缓存的动态预览', result.items?.[0]?.previewUrl?.includes('&v=3-'))
+  const badMethod = await request('/reel/api/search', { method: 'POST' })
+  checkEqual('搜索路由只接受读取请求', badMethod.status, 405)
+}
+
 // ── 生命周期 ───────────────────────────────────────────────────────────────
 
 {
-  checkEqual('注册了 12 条精确路由', harness.routes.exact.size, 12)
+  checkEqual('注册了 14 条精确路由（含实时取帧）', harness.routes.exact.size, 14)
   check('注册了资源前缀路由', harness.routes.prefix.has('/reel'))
   const before = harness.routes.exact.size
   harness.dispose()
@@ -785,7 +801,7 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
 
   // 3) 热更新换到子目录：列表必须跟着换。这也是缓存失效的观测点——字幕索引
   //    按目录缓存，而 /api/list 会走它给视频挂 subtitles。
-  const swapped = await call('/reel/api/list?k=r0')
+  const swapped = await call(`/reel/api/list?k=${mediaKeyOf(settingsEntry.value.roots.get()[0])}`)
   check('热更新后列表跟着换',
     (swapped.payload.files ?? []).some((file) => file.name === 'e.webm'),
     JSON.stringify((swapped.payload.files ?? []).map((file) => file.name)))
@@ -801,7 +817,7 @@ const keyOf = (rel) => `r0${rel === '' ? '' : `/${rel.split('/').map(encodeURICo
 
   // 5) 派生缓存确实失效了：a.mp4 在根目录，它的字幕轨道来自根目录的 d.srt/d.ass。
   //    若字幕索引还停在子目录那份，这里就拿不到轨道。
-  const rootList = await call('/reel/api/list?k=r0')
+  const rootList = await call(`/reel/api/list?k=${mediaKeyOf(settingsEntry.value.roots.get()[0])}`)
   const aMp4 = (rootList.payload.files ?? []).find((file) => file.name === 'a.mp4')
   check('换回后能看到根目录的文件', aMp4 !== undefined, JSON.stringify((rootList.payload.files ?? []).map((file) => file.name)))
 

@@ -240,7 +240,7 @@ svg { width: 18px; height: 18px; fill: currentColor; }
 }
 
 .mode-btn:hover { color: var(--fg); }
-.mode-btn.is-active { background: var(--accent); color: #fff; }
+.mode-btn.is-active { background: var(--accent); color: var(--on-accent, #fff); }
 
 .search { position: relative; flex: 1 1 auto; min-width: 120px; max-width: 460px; }
 
@@ -1288,6 +1288,14 @@ body[data-view="list"] .card-progress { display: none; }
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
 }
 
+.scrub-image { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; pointer-events: none; }
+.player.is-scrubbing .player-center { visibility: hidden; }
+.player.is-scrubbing .player-spinner, .player.is-speeding .player-spinner, .player.is-seeking .player-spinner { display: none; }
+.player.is-speeding .player-center { visibility: hidden; }
+.player.is-speeding .time::after { content: ' · 快进中'; color: #fff; }
+.player.is-rewinding .time::after { content: ' · 后退中'; }
+.seek-step { touch-action: none; user-select: none; -webkit-user-select: none; }
+
 .player-center {
   position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center;
@@ -1389,18 +1397,22 @@ body[data-view="list"] .card-progress { display: none; }
 
 .player-sub { font-size: 12.5px; color: rgba(255, 255, 255, 0.66); flex: none; }
 
-.progress { position: relative; padding: 8px 0 10px; cursor: pointer; outline: none; }
+.progress { position: relative; display: flex; align-items: center; height: 48px; padding: 0; cursor: pointer; outline: none; user-select: none; -webkit-user-select: none; }
+.progress:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+.progress.is-scrubbing { cursor: grabbing; }
+.progress[aria-disabled="true"] { cursor: default; opacity: .5; }
 
 .progress-track {
   position: relative;
-  height: 5px;
+  width: 100%; height: 6px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.22);
   overflow: visible;
   transition: height 0.15s var(--ease);
 }
 
-.progress:hover .progress-track, .progress:focus-visible .progress-track { height: 8px; }
+.progress:hover .progress-track, .progress:focus-visible .progress-track, .progress.is-scrubbing .progress-track { height: 8px; }
+.progress.is-scrubbing .progress-track, .progress.is-scrubbing .progress-thumb { transition: none; }
 
 .progress-buffer, .progress-played {
   position: absolute; left: 0; top: 0; bottom: 0;
@@ -1413,21 +1425,21 @@ body[data-view="list"] .card-progress { display: none; }
 
 .progress-thumb {
   position: absolute; top: 50%;
-  width: 14px; height: 14px;
-  margin-left: -7px;
+  width: 16px; height: 16px;
+  margin-left: -8px;
   border-radius: 50%;
   background: #fff;
-  transform: translateY(-50%) scale(0.7);
+  transform: translateY(-50%) scale(1);
   transition: transform 0.15s var(--ease);
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.55);
   pointer-events: none;
 }
 
-.progress:hover .progress-thumb, .progress:focus-visible .progress-thumb { transform: translateY(-50%) scale(1); }
+.progress:hover .progress-thumb, .progress:focus-visible .progress-thumb, .progress.is-scrubbing .progress-thumb { transform: translateY(-50%) scale(1.15); }
 
 .progress-tip {
   position: absolute;
-  bottom: 26px;
+  bottom: 48px;
   transform: translateX(-50%);
   background: rgba(0, 0, 0, 0.82);
   border-radius: 8px;
@@ -1447,11 +1459,14 @@ body[data-view="list"] .card-progress { display: none; }
 .progress-tip video {
   width: 132px;
   border-radius: 5px;
-  display: block;
+  display: none;
   background: #000;
 }
 .progress-tip video[hidden] { display: none; }
 .progress-tip.is-live img { display: none; }
+.progress-tip.is-live video { display: block; }
+.progress-tip.is-scrub-tip { padding: 7px 12px; font-size: 14px; color: #fff; }
+.progress-tip.is-scrub-tip img, .progress-tip.is-scrub-tip video { display: none; }
 
 .controls { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 
@@ -1523,6 +1538,9 @@ body[data-view="list"] .card-progress { display: none; }
 .menu button:hover { background: var(--bg-hover); color: var(--fg); }
 .menu button.is-on { color: var(--accent-strong); }
 .menu .menu-note { padding: 7px 10px; color: var(--fg-faint); font-size: 12px; }
+.player-more-menu { min-width: 176px; }
+.controls .player-more-menu .icon-btn { display: flex; width: 100%; height: auto; min-height: 40px; padding: 9px 12px; justify-content: flex-start; font-size: 13px; white-space: nowrap; }
+.player-more-menu .icon-btn.is-on::after { content: '✓'; margin-left: auto; }
 .menu hr { border: 0; border-top: 1px solid var(--line-soft); margin: 5px 2px; }
 
 .stats {
@@ -1668,13 +1686,13 @@ button, .card, .crumb, .crumb-name, .crumb-chevron, .crumb-fold, .tree-folder, .
 
   /* 播放器：进度条加高、不常用的按钮收进屏幕外，避免换行挤成两排。 */
   .player-chrome { padding: 36px 10px calc(12px + env(safe-area-inset-bottom)); }
-  .progress { padding: 12px 0 12px; }
+  .progress { height: 48px; padding: 0; }
   .progress-track { height: 7px; }
-  .progress-thumb { width: 15px; height: 15px; margin-left: -7.5px; }
+  .progress-thumb { width: 18px; height: 18px; margin-left: -9px; }
   .controls { gap: 2px; }
   .controls .icon-btn { width: 38px; height: 38px; }
   .controls-right { gap: 2px; }
-  #btnSnapshot, #btnStats, #btnDownload, #btnLoop, #btnWallpaper { display: none; }
+  .controls .player-more-menu .icon-btn { display: flex; min-height: 44px; }
   /* 播放顺序（顺序 / 随机）在手机上最常用，不能跟着上面那几条一起藏。 */
   .stat { display: none; }
   .time { font-size: 11.5px; margin-left: 4px; }
@@ -1685,7 +1703,7 @@ button, .card, .crumb, .crumb-name, .crumb-chevron, .crumb-fold, .tree-folder, .
   .menu { bottom: 44px; min-width: 128px; }
   .menu button { padding: 9px 10px; }
   .stats { max-width: 92vw; font-size: 11px; }
-  .progress-tip { bottom: 30px; }
+  .progress-tip { bottom: 48px; }
   .progress-tip img { width: 104px; }
   .progress-tip video { width: 104px; }
 
@@ -1695,7 +1713,7 @@ button, .card, .crumb, .crumb-name, .crumb-chevron, .crumb-fold, .tree-folder, .
 @media (max-width: 420px) {
   :root { --tile-base: 112px; }
   .viewer-meta { display: none; }
-  .time { display: none; }
+  .time { display: inline; }
 }
 
 @media (prefers-reduced-motion: reduce) {

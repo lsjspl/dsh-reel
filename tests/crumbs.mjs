@@ -469,7 +469,9 @@ const fetchJson = async (url) => {
   return {}
 }
 
+let listGate = null
 const fetchStub = async (url) => {
+  if (String(url).includes('/api/list') && new URL(String(url), 'http://x').searchParams.get('k') === listGate?.key) await listGate.wait
   const payload = await fetchJson(String(url))
   return {
     ok: true,
@@ -537,6 +539,7 @@ const sandbox = {
   getComputedStyle: () => ({ columnGap: '0px' }),
   URL,
   URLSearchParams,
+  AbortController,
   Date,
   Math,
   JSON,
@@ -730,6 +733,33 @@ check('「‹」回到上一级', shape().current === 'a', JSON.stringify(shape(
 doc.dispatch('keydown', { key: 'Backspace', target: doc.body })
 await sleep(60)
 check('Backspace 也回上一级', shape().current === '根目录', JSON.stringify(shape()))
+
+// 10. 选择目录不应等待祖先的子树加载，空目录与已展开节点也一样。
+await at([])
+doc.querySelector('.tree-root-name').click()
+await sleep(60)
+const rootTreeNode = doc.querySelector('.tree-root-name')
+const rootChildren = rootTreeNode.parentElement.querySelector('.tree-children')
+rootChildren.dataset.loaded = '0'
+let releaseRoot
+listGate = { key: 'r0', wait: new Promise(resolve => { releaseRoot = resolve }) }
+const emptyRow = doc.querySelector('.tree-folder[data-key="r0/b"]')
+const otherRow = doc.querySelector('.tree-folder[data-key="r0/a"]')
+const beforeEmpty = fetchCalls.length
+emptyRow.click()
+check('选择空目录立即请求右侧内容，不等待祖先加载', fetchCalls.slice(beforeEmpty).some(url => new URL(url, 'http://x').searchParams.get('k') === 'r0/b'))
+await sleep(60)
+checkEqual('空目录被选中且右侧路径更新', [shape().current, emptyRow.classList.contains('is-active')], ['b', true])
+check('空目录右侧显示空状态', doc.getElementById('empty').hidden === false)
+otherRow.click()
+await sleep(60)
+listGate = null
+releaseRoot()
+await sleep(60)
+checkEqual('较早的目录展开完成不会切回旧目录', shape().current, 'a')
+emptyRow.click()
+await sleep(60)
+checkEqual('已经展开的空目录再次选择也会导航', shape().current, 'b')
 
 // ── 结果 ──────────────────────────────────────────────────────────────────
 

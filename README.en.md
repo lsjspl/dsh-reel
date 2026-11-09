@@ -34,7 +34,7 @@
 ---
 
 <p align="center">
-  <img src="doc/screenshot/home.png" alt="dsh-reel Media Library Interface" width="960" />
+  <img src="doc/screenshot/library-desktop.jpg" alt="dsh-reel Media Library Interface (test media)" width="960" />
 </p>
 
 ## Overview
@@ -135,6 +135,8 @@ dsh plugin --profile web add "github:lsjspl/dsh-reel"
 dsh plugin --profile web add "link:C:\path\to\dsh-reel"
 ```
 
+A linked installation reads source files from that directory. Refresh the browser after frontend HTML/CSS/JS changes. Reload the plugin or restart dsh after backend module changes; refreshing the browser does not replace modules already loaded in the server process.
+
 ### Uninstallation
 
 ```powershell
@@ -175,7 +177,7 @@ Configure in `cordis.patch.yml`:
     # wallpaper: 'D:\Photos\wallpaper.jpg'  # Default wallpaper path
     # ffmpegPath: 'D:\ffmpeg\bin\ffmpeg.exe' # Custom ffmpeg binary path
     # requireTrustedRequest: true           # LAN trust fence; false permits non-loopback clients
-    # maxScanEntries: 20000                 # Max scanned items (50 ~ 200000)
+    # maxScanEntries: 20000                 # Directory-entry work budget per scan page (50 ~ 200000)
 ```
 
 > [!NOTE]
@@ -184,6 +186,18 @@ Configure in `cordis.patch.yml`:
 > [!NOTE]
 > - If `roots` is empty, fallback priority is: `REEL_ROOTS` environment variable (semicolon-separated) followed by `$DSH_HOME/media`.
 > - Keep `cacheDir` outside of your media roots to prevent cache files from cluttering your library.
+
+### Media keys, scanning, and resource limits
+
+- Root IDs derive from normalized configured paths and survive unavailable directories, reordering, removal of other roots, and restarts. Use the IDs returned by the viewer or `/reel/api/session` instead of writing directory indices yourself.
+- Legacy positional `r0/r1` keys are rejected. Reopen `/reel` and save new bookmarks after upgrading. Reselect wallpapers configured with old keys or use absolute paths; old positional playback progress is not assigned to new media.
+- Flat browsing and search share a background media index, including filename/path matching in the selected scope or across all disks. Results are paged in batches of 120. The index is bounded to 500,000 files and 64 directory levels. Refreshes retain the previous result while rebuilding. Cold scans, thumbnail generation and unsupported codecs still depend on disk and encoding speed.
+- Grouped views use scan cursors, with up to 3000 media entries per page and a 32-level depth limit. Reaching the `maxScanEntries` work budget also returns a `nextCursor`.
+
+The mobile library includes a directory drawer and bottom navigation. Silent H.264 MP4 card previews play one at a time, on desktop hover or after mobile scrolling settles; display settings allow disabling previews. Reduced motion and data-saving preferences disable automatic previews by default. The explicit reels mode starts clips from zero, loops each clip by default and supports vertical swipes, wheel navigation and arrow controls. Ordinary playback retains resume/playlist preferences and ignores swipe/wheel file switching. Preparing the next clip only reads metadata for directly playable files; it never starts an additional transcoder.
+- API callers must keep the same `k`, `kinds`, and `depth`, passing `nextCursor` back unchanged until it is `null`. Cursors expire after 60 idle seconds and must be restarted after configuration changes. Each plugin retains at most 16 scan sessions; cancellation, expiry, and unload close directory handles.
+- Live transcoding allows 2 concurrent processes with 2 decoder/encoder threads each. Excess requests receive `503` with `Retry-After: 2`. Processes stop after 25 seconds without startup output or 30 seconds without progress after startup. Browser backpressure pauses do not count as encoder stalls; disconnection and plugin unload also stop encoders.
+- `requireTrustedRequest` defaults to true in the plugin itself and is disabled only by explicit false. Original SVG responses carry a sandbox CSP and script restrictions so opening media cannot obtain the dsh origin's privileges.
 
 ### About the port
 
@@ -247,7 +261,8 @@ sudo apt update && sudo apt install ffmpeg
 | Key | Action |
 |:---:|:---|
 | <kbd>Space</kbd> / <kbd>K</kbd> | Play / Pause |
-| <kbd>←</kbd> / <kbd>→</kbd> | Seek backward / forward 5s |
+| <kbd>←</kbd> / <kbd>→</kbd> | Tap to seek backward / forward 5s; hold for continuous rewind / fast-forward, including after clicking player buttons |
+| <kbd>←</kbd> / <kbd>→</kbd> with timeline focused | Fine seek by 1s; hold Shift for 10s |
 | <kbd>J</kbd> / <kbd>L</kbd> | Seek backward / forward 10s |
 | <kbd>↑</kbd> / <kbd>↓</kbd> | Volume step (±5%) |
 | <kbd>M</kbd> | Mute / Unmute |

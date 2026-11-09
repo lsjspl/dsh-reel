@@ -121,7 +121,7 @@ flowchart LR
     AssertRel -->|阻断 NUL / ..| Resolve["resolve(root, rel)"]
     Resolve --> RealpathRoot["realpath(root)"]
     Resolve --> RealpathTarget["realpath(target)"]
-    RealpathRoot & RealpathTarget --> Contains{"Target 以 Root + sep 开头?"}
+    RealpathRoot & RealpathTarget --> Contains{"relative(Root, Target) 没有上跳或跨盘?"}
     Contains -->|Yes| Allowed["放行: 返回真实绝对路径"]
     Contains -->|No| Blocked["拒绝: 返回 404/Null"]
 ```
@@ -134,21 +134,22 @@ flowchart LR
    // lib/media.js
    export async function resolveInside(root, relPath) {
      const abs = relPath === '' ? root : resolve(root, relPath)
-     let real
+     let real, realRoot
      try {
-       real = await realpath(abs)
+       ;[realRoot, real] = await Promise.all([realpath(root), realpath(abs)])
      } catch {
        return null
      }
-     if (real !== root && !real.startsWith(root + sep)) return null
-     return { abs: real, rel: relative(root, real).split(sep).join('/') }
+     const rel = relative(realRoot, real)
+     if (isAbsolute(rel) || rel === '..' || rel.startsWith(`..${sep}`)) return null
+     return { abs: real, rel: rel.split(sep).join('/') }
    }
    ```
-   由于操作系统中软链接可在任何层级跳跃到挂载根目录之外，简单的字符串前缀比对无法免疫攻击。此处在解析前对挂载根与目标绝对路径双双执行系统调用 `realpath`，只有当目标物理真实路径严格以 `root + sep` 作为前缀时才判定合法。
+   由于操作系统中软链接可在任何层级跳跃到挂载根目录之外，简单的字符串前缀比对无法免疫攻击。此处在解析前对挂载根与目标绝对路径双双执行系统调用 `realpath`，通过 `relative(realRoot, realTarget)` 拒绝跨盘绝对路径及 `..` 上跳；根目录可以是 junction 或软链，也可以是文件系统根。
 
 ### 2.3 信任门禁与回环地址隔离 (Trust Boundary)
 - **本地回环判定**：通过 `isLoopback(address)` 识别 `127.0.0.1`、`::1` 以及 IPv4-mapped 格式 `::ffff:127.0.0.1`。
-- **局域网信任屏障**：在配置 `requireTrustedRequest: true`（默认启用）时，非回环地址的局域网入站请求必须通过宿主注入的 `ctx.webServer.isTrusted(req)` 门禁验证，否则直接阻断访问，防止内网未鉴权嗅探。
+- **局域网信任屏障**：在配置 `requireTrustedRequest: true`（默认启用）时，非回环地址的局域网入站请求必须通过宿主 `connection.requestRejection(req)` 的信任和认证验证（服务缺席时使用同源兜底检查），否则直接阻断访问，防止内网未鉴权嗅探。
 
 ### 2.4 缓存目录重叠告警与隔离机制
 为防止用户误将 `cacheDir` 设置在媒体目录内部，导致哈希命名的缓存图片出现在媒体列表视图中，服务端在每次启动及配置更新时执行重叠检测（`warnCacheInsideRoot`）：
@@ -159,16 +160,15 @@ flowchart LR
 ## 3. 数据模型与寻址语义 (Data Models & Addressing Grammar)
 
 ### 3.1 Media Key 编码规范
-系统通过统一的 `Media Key` 语法在网络协议层定位资源，避免直接暴露宿主机器的文件绝对路径：
+系统使用稳定根标识定位媒体，根目录的暂时离线、重排和其它目录的删除不会改变已有 key：
 
 ```text
-MediaKey := "r" + RootIndex + ["/" + URLEncodedRelativePath]
+MediaKey := "r" + StableRootId + ["/" + 每段分别编码的相对路径]
 ```
 
-- **示例**：
-  - `r0`：定位至索引为 0 的挂载根目录本身；
-  - `r1/Movies%2F2024%2Ftest.mp4`：定位至索引为 1 的根目录下的 `Movies/2024/test.mp4`；
-  - 空键或非法键默认自动规约至 `r0`。
+- 根标识由规范化配置路径的 SHA-256 摘要生成，Windows 路径忽略大小写；标识保留在 JavaScript 安全整数范围内。`session.roots[].index` 现在是稳定 ID，不能当作数组下标。
+- `r5000000000000001/Movies/2024/test.mp4` 是格式示例，真实 ID 应从 `/reel/api/session` 或浏览页获取。
+- 空 key 选择第一个当前可用根；非法 key 返回 404。旧的 `r0/r1` 位置型 key 无法证明原来对应的根，因此拒绝解析。升级后需重新保存链接及壁纸，旧位置型续播进度不自动迁移。
 
 ### 3.2 聚合根虚拟化 (Virtual Library)
 当传入 `k=lib` 时，系统启用虚拟聚合根模式：
@@ -181,43 +181,53 @@ MediaKey := "r" + RootIndex + ["/" + URLEncodedRelativePath]
 - **返回模型结构**：
   ```json
   {
-    "root": { "index": 0, "path": "D:\\Photos", "label": "Photos" },
-    "key": "r0/Family",
-    "name": "Family",
-    "parent": "r0",
+    "root": { "index": 5000000000000001, "path": "D:\\Photos", "label": "Photos" },
+    "key": "r5000000000000001/Family",
+    "rel": "Family",
+    "parent": "r5000000000000001",
     "crumbs": [
-      { "name": "Photos", "key": "r0" },
-      { "name": "Family", "key": "r0/Family" }
+      { "name": "库", "key": "lib" },
+      { "name": "Photos", "key": "r5000000000000001" },
+      { "name": "Family", "key": "r5000000000000001/Family" }
     ],
-    "dirs": [
-      { "name": "2023", "key": "r0/Family/2023", "media": 12 }
+    "folders": [
+      { "name": "2023", "key": "r5000000000000001/Family/2023", "mediaCount": 12 }
     ],
     "files": [
       {
         "name": "IMG_001.jpg",
-        "key": "r0/Family/IMG_001.jpg",
+        "key": "r5000000000000001/Family/IMG_001.jpg",
         "kind": "image",
         "size": 2451000,
         "mtimeMs": 1715000000000,
-        "thumbUrl": "/reel/thumb?k=r0%2FFamily%2FIMG_001.jpg",
-        "streamUrl": "/reel/stream?k=r0%2FFamily%2FIMG_001.jpg"
+        "thumbUrl": "/reel/thumb?k=r5000000000000001%2FFamily%2FIMG_001.jpg",
+        "streamUrl": "/reel/stream?k=r5000000000000001%2FFamily%2FIMG_001.jpg"
       }
     ],
     "offset": 0,
-    "total": 520,
-    "more": true
+    "fileCount": 520,
+    "nextOffset": 400
   }
   ```
 - **子目录轻量探测优化**：在枚举子文件夹时，不调用开销巨大的递归 `stat`，而是通过 `countMediaEntries` 仅使用带文件类型标记的 `readdir({ withFileTypes: true })` 进行一级文件浅扫，快速判定子文件夹内是否含有媒体，避免深层 I/O 阻塞。
 
 ### 3.4 递归扫描算法与背压保护
-全局平铺（All）与目录分组（Folder Grouping）依赖递归扫描接口（`/reel/api/scan`）：
-- **动态深度与类型过滤**：支持 `kinds=image,video` 参数动态裁剪。
-- **软硬双重保护阈值**：
-  - **软限制 (`maxScanEntries`)**：用户可配置，默认 `20,000`，超额后截断扫描并置 `truncated: true`；
-  - **单次请求硬上限 (`SCAN_HARD_LIMIT = 3000`)**：单次 HTTP 响应返回的最大媒体对象数，防止前端反序列化超大 JSON 导致渲染主线程假死。
+全局平铺和目录分组使用 `/reel/api/scan` 的续扫游标：
+- 每页最多返回 3000 条媒体，`maxScanEntries`（默认 20,000）限制每页处理的目录条目数，包含非媒体文件；达到任一预算时返回 `nextCursor`，不会丢掉剩余树。
+- 遍历通过 `opendir` 按条目读取，游标保存目录迭代器和队列；单层列表的 `stat` 并发另限制为 16。
+- 客户端自动携带游标续扫直到 `nextCursor: null`，收齐所有页面后统一过滤和排序。`truncated` 为最终页的深度截断标记；页面最多遍历 32 层目录。
+- 每个插件最多保存 16 个扫描会话。请求取消、60 秒空闲过期和卸载均关闭迭代器；游标只能消费一次，并校验目录范围、媒体类型、深度和配置版本。
+- 过期游标返回 410，范围或版本变化返回 409，容量已满返回 503。调用方应在需要时重新开始扫描。
 
 ---
+
+### 3.4 跨硬盘共享媒体索引
+
+`lib/catalog.js` 为每个插件实例保留一份内存索引，包含稳定媒体 key、根目录、相对路径、类型、大小和修改时间。两个遍历任务独立处理配置根目录，每批最多并发 stat 8 个文件，定期让出事件循环。首次扫描增量发布结果；刷新用新 Map 构建替代索引，完成后一次替换，避免空白期。刷新发生在扫描期间时安排下一轮扫描，配置变更使用独立 generation/epoch 阻止旧任务回填。
+
+平铺浏览及搜索通过 `/api/search` 查询这份索引，分页前执行 Unicode NFKC 归一化、多词 AND 路径/名称匹配、范围过滤和排序。响应同时返回完整数量、下一页 offset、索引版本及建立索引/不可读/截断状态。仅当前结果页附加播放、字幕和缩略图地址；同页复用字幕目录查找。结果缓存同时限制为 32 个查询及最多 1,000,000 个文件引用。索引最多 500,000 个媒体、64 层目录；到期约 60 秒后按请求后台刷新，服务重启需重新建立索引。
+
+客户端搜索防抖 110ms，取消旧请求并校验导航及搜索序号。索引版本变化时从第一页重新读取，避免不同版本 offset 混合。分组视图保留前述 `/api/scan` 可续扫协议；分组中的搜索使用索引平铺匹配结果。
 
 ## 4. HTTP API 与网络传输协议 (HTTP API & Protocols)
 
@@ -227,14 +237,16 @@ MediaKey := "r" + RootIndex + ["/" + URLEncodedRelativePath]
 |---|---|---|---|---|
 | `GET` | `/reel/api/session` | 无 | `200 OK`: 会话信息、根目录拓扑、编解码器就绪状态 | `no-store` |
 | `GET` | `/reel/api/list` | `k`: string (Key)<br>`offset`: int | `200 OK`: 分页目录树与媒体元数据对象<br>`404`: 路径不存在 | `no-store` |
-| `GET` | `/reel/api/scan` | `k`: string<br>`kinds`: string<br>`limit`: int<br>`depth`: int | `200 OK`: 递归平铺条目集合与截断标记 | `no-store` |
+| `GET` | `/reel/api/search` | `k`, `q`, `kinds`, `sort`, `recursive`, `offset`, `limit`, `refresh` | `200 OK`: 分页媒体、total、nextOffset、generation 和索引状态 | `no-store` |
+| `GET` | `/reel/api/scan` | `k`: string<br>`kinds`: string<br>`limit`: int<br>`depth`: int<br>`cursor`: string | `200 OK`: 递归条目、`nextCursor` 与截断标记 | `no-store` |
 | `POST` | `/reel/api/probe` | Body: `{"keys": string[]}` (max 200) | `200 OK`: 批量 ffprobe 时长、宽高比及编解码元数据 | `no-store` |
 | `GET` | `/reel/api/stat` | `k`: string | `200 OK`: 单文件属性及相邻项（Siblings）列表 | `no-store` |
 | `GET` | `/reel/stream` | `k`: string<br>`dl`: '1'\|'0' | `206 Partial Content` / `200 OK`: 二进制范围媒体流 | 支持 Range / 带 ETag 协商 |
 | `GET` | `/reel/download` | `k`: string | `200 OK`: 强制文件附件下载流 | `attachment` 标头 |
 | `GET` | `/reel/transcode` | `k`: string<br>`t`: float (起始秒) | `200 OK`: 实时管道分片 MP4 二进制流<br>`503`: 转码器未就绪 | `no-store`, `nosniff` |
+| `GET` | `/reel/frame` | `k`: string<br>`t`: float (目标秒)<br>`v`: 媒体版本 | `200 OK`: 拖动或后退时的 JPEG 帧<br>`503`: 取帧池忙或抽帧失败 | `private, max-age=3600`, `nosniff` |
 | `GET` | `/reel/thumb` | `k`: string | `200 OK`: 缩略图 JPEG 二进制字节<br>`503`: 抽帧不可用 | `private, max-age=86400` |
-| `GET` | `/reel/preview` | `k`: string | `200 OK`: 4秒微视频 WebM 二进制字节 | `private, max-age=86400, immutable` |
+| `GET` | `/reel/preview` | `k`: string | `200 OK`: 最长 4 秒无声 H.264 MP4 二进制字节 | `private, max-age=86400, immutable` |
 | `GET` | `/reel/subtitle` | `k`: string | `200 OK`: 标准 WebVTT 格式字幕流 | `private, max-age=3600` |
 
 ### 4.2 RFC 7233 范围流传输 (HTTP 206 Range)
@@ -284,7 +296,7 @@ sequenceDiagram
     participant Server as Reel 服务端 (Node.js)
     participant FFmpeg as FFmpeg 子进程 (CLI)
 
-    Client->>Server: GET /reel/transcode?k=r0/video.avi&t=120.5
+    Client->>Server: GET /reel/transcode?k=r5000000000000001/video.avi&t=120.5
     Server->>FFmpeg: spawn(ffmpeg, [-ss 120.5, -i video.avi, -movflags frag_keyframe... pipe:1])
     Note over Server,FFmpeg: stdio: ['ignore', 'pipe', 'ignore']
     FFmpeg-->>Server: stdout 首个 Fragment (moof/mdat) 到达
@@ -333,9 +345,10 @@ const args = [
 - **分片 MP4 协议标志 (`frag_keyframe+empty_moov+default_base_moof`)**：
   将原本存放在 MP4 文件尾部的索引信息（`moov atom`）完全弱化为空结构并前置，每个视频片段通过 `moof` + `mdat` 独立索引封包。浏览器通过 MSE 或原生流直接消费管道字节流，无需等待文件末尾。
 
-### 5.2 毫秒级 Seek 与流重启机制
+### 5.2 实时拖动预览与流重启机制
 在实时转码模式下，由于响应体没有固定的 `Content-Length`，浏览器无法利用 HTTP Range 进行定位。
-- **解决方案**：前端播放引擎监听到 Seek 事件后，主动中止当前活跃的连接，重新向服务端发起附带目标秒数的请求：
+- **拖动预览**：拖动和长按后退时，保留当前播放连接，调用 `/reel/frame` 取得目标时间的画面覆盖主视频。客户端只保留一个取帧请求和最新目标，松开后才重启一次播放流。原生格式直接定位主视频，等解码完成再处理最新位置。
+- **提交定位**：松开拖动或后退按钮后，主动中止当前活跃的连接，重新向服务端发起附带目标秒数的请求：
   ```text
   GET /reel/transcode?k=<key>&t=<target_seconds>
   ```
@@ -346,15 +359,20 @@ const args = [
 - **防黑屏抽帧点探测**：
   针对视频缩略图，避开片头 0 秒常见的全黑屏或制片厂 Logo。优先调用探针获取时长，在视频 **20% 处**提取单帧；若探测不可用，则默认从第 5 秒取帧。
 - **微视频动图提取规格**：
-  抽取视频中段 **4 秒**内容，按 12 FPS 压制为宽度 320px 的低码率 WebM 动图，生成参数：
+  抽取视频中段最多 **4 秒**内容，按 12 FPS 压制为最长边 320px 的无声 H.264 MP4，使用 yuv420p 与 faststart 兼容移动浏览器。解码、编码各限制为 2 个线程，滤镜 1 个线程。核心参数：
   ```bash
-  ffmpeg -ss <mid> -t 4 -i <abs> -an -vf scale=320:-2 -r 12 -c:v libvpx -b:v 250k -f webm
+  ffmpeg -threads 2 -ss <mid> -i <abs> -t 4 -an -vf "scale=w='min(320,iw)':h='min(320,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=12" -filter_threads 1 -c:v libx264 -threads 2 -preset veryfast -crf 30 -pix_fmt yuv420p -movflags +faststart -f mp4 <cache.preview.mp4>
   ```
+
+  桌面悬停/键盘聚焦和手机滚动停下后才请求动态图，客户端同时只保留一张活动预览。离开视口、重画卡片、切后台、关闭预览及打开播放器时停止并拆除预览视频，防止后台解码积累。“刷视频”独立于普通播放，下一条仅预读可直接播放文件的 metadata，不提前启动转码进程。
 
 ### 5.4 进程池并发控制与失败熔断机制 (Miss Cache)
 音视频编解码属于高 CPU 消耗型任务，系统设置了严格的并发槽位池（Concurrency Slots）：
 - `THUMB_CONCURRENCY = 3`：视频/图像缩略图最大并发处理进程；
 - `PROBE_CONCURRENCY = 4`：`ffprobe` 媒体信息提取并发池。
+- 实时转码池独立限制为 2 个进程，解码和编码各使用 2 个线程；超限返回 503 和 `Retry-After: 2`。槽位在子进程实际退出后释放，断开连接和卸载会终止进程。
+- 转码启动 25 秒无输出，或开始输出后 30 秒无进展时终止；客户端背压暂停不计为编码停滞。
+- 实时取帧池独立限制为 2 个进程，半秒为缓存粒度、最长边 640px，单帧上限 512KB；最多缓存 128 帧和 8MB。超时 5 秒或请求断开会终止进程，槽位在实际退出后释放，繁忙时不堆积旧目标请求。
 
 #### 多维哈希缓存定位算法
 缩略图缓存文件名由多维元数据经 SHA-1 运算派生：
@@ -421,7 +439,7 @@ const state = {
 - **模式流变流水线**：
   当用户切换模式（`G` 键）或定位目录时，状态机触发流水线：
   ```text
-  UpdateState → Fetch Data (list / scan) → Pipeline (Filter → Sort) → Virtual DOM Render
+  UpdateState → Fetch Data (list / scan) → Pipeline (Filter → Sort) → DOM Render
   ```
 
 ### 6.2 路径面包屑自适应折叠算法
@@ -526,3 +544,7 @@ runInNewContext(appSource, sandbox)
 ### 8.3 布局与触控数学模型测试
 - `tests/layout.mjs`：离线验证瓦片 CSS 计算公式（`calc(var(--tile-base) * 0.68)`）在不同逻辑视口宽度下的栅格列数；
 - `tests/mobile.mjs`：离线输入不同触控位移采样序列，验证手势识别状态机的判定阈值与滑动切换逻辑。
+
+### 导航与缓存一致性
+
+目录导航、内容模式切换及续页共享请求版本和 AbortController。旧响应即使在取消后返回，也不能修改当前列表；续页哨兵有并发去重。递归结果按目录及数据版本缓存，空结果也可缓存；手动刷新与配置变化使扫描、面包屑和探测队列失效。字幕索引按目录 mtime/ctime 校验并有 TTL，列表刷新及新扫描主动失效索引。设置轮询同时比较 revision 和根列表，目录离线也能被发现。SVG 字节响应附带 CSP 沙箱，字幕菜单名称通过 textContent 展示。

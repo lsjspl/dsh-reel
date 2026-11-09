@@ -6,6 +6,7 @@
 <meta name="color-scheme" content="dark light">
 <title>DSH reel</title>
 <link rel="stylesheet" href="/reel/app.css">
+<link rel="stylesheet" href="/reel/library.css">
 <link rel="icon" href="/reel/brand.svg">
 </head>
 <body data-view="grid">
@@ -19,25 +20,27 @@
 
 <!-- ── 顶栏 ───────────────────────────────────────────────────────────── -->
 <header class="topbar">
+  <button type="button" class="icon-btn directory-toggle" id="directoryToggle" aria-label="打开媒体目录" aria-expanded="false" aria-controls="sidebar"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4h14v2H3zm0 5h14v2H3zm0 5h14v2H3z"/></svg></button>
   <div class="brand">
     <!-- 标在 brand.svg 里：放映轮盘 × DeepSeek 巨鲸融合 + 大号纯白播放键，同一个文件也当 favicon，
          所以图形只有一份，顶栏和标签页永远一致。 -->
     <span class="brand-mark" aria-hidden="true"><img src="/reel/brand.svg" alt=""></span>
     <span class="brand-text">
-      <span class="brand-name">DSH</span>
+      <span class="brand-name">Reel</span>
       <!-- 跟 dsh 那枚「HARNESS」徽标同款：反白圆角小牌 + 大写加字距。 -->
-      <span class="brand-badge">REEL</span>
+      <span class="brand-badge">本地媒体库</span>
     </span>
   </div>
 
   <div class="search">
-    <input id="searchInput" type="search" placeholder="筛选当前目录（名称）" autocomplete="off" spellcheck="false" aria-label="筛选">
+    <input id="searchInput" type="search" placeholder="搜索文件名或路径" autocomplete="off" spellcheck="false" aria-label="搜索媒体">
     <kbd class="search-hint">/</kbd>
   </div>
+  <select id="searchScope" class="search-scope" aria-label="搜索范围"><option value="current">当前范围</option><option value="library">全部硬盘</option></select>
 
   <div class="topbar-actions">
     <!-- 一键看视频：把当前列表打乱，直接用播放器铺满这一页开始放。 -->
-    <button type="button" class="watch-btn" id="watchRandomBtn" title="随机看视频：打乱当前列表，用播放器铺满这一页连播">▶ 看视频</button>
+    <button type="button" class="watch-btn" id="watchRandomBtn" title="竖屏连续观看，上下滑动切换视频"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3l9 7-9 7z"/></svg><span>刷视频</span></button>
     <button type="button" class="icon-btn" id="refreshBtn" title="重新载入当前目录 (R)" aria-label="刷新">
       <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3a7 7 0 1 0 6.7 9h-2.1A5 5 0 1 1 10 5v2.5L14 4l-4-3.5z"/></svg>
     </button>
@@ -48,9 +51,10 @@
 <div class="browse" id="browsePane">
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-head">
-      <span>目录</span>
+      <span>媒体目录</span>
       <button type="button" class="link-btn" id="collapseSidebar" title="收起目录 (B)">收起</button>
     </div>
+    <button type="button" class="library-home" id="libraryHome"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 3h6v6H3zm8 0h6v6h-6zM3 11h6v6H3zm8 0h6v6h-6z"/></svg>全部媒体<span id="rootStatus"></span></button>
     <nav class="tree" id="tree" aria-label="目录树"></nav>
     <div class="sidebar-foot">
       <button type="button" class="ghost-btn" id="playAllBtn" title="从当前列表的第一条起进播放器：手机上打开就是整页，上下滑换条 (F)">
@@ -67,6 +71,7 @@
 
   <main class="content" id="content">
     <div class="toolbar-sticky" id="toolbarSticky">
+      <div class="library-heading"><div><h1 id="libraryTitle">本地媒体库</h1></div><button type="button" class="primary-btn" id="playSelection"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 4l10 6-10 6z"/></svg>播放全部</button></div>
       <section class="toolbar">
         <!--
           路径行在工具条同一行上：左边回答「我在哪、怎么上去」，右边是那排按钮。
@@ -78,36 +83,41 @@
           <div class="crumbs" id="crumbs"></div>
         </nav>
         <div class="toolbar-side">
+          <div class="modes modes-sm" role="group" aria-label="媒体类型">
+            <button type="button" class="mode-btn is-active" data-kind-btn="all">全部</button>
+            <button type="button" class="mode-btn" data-kind-btn="video">视频</button>
+            <button type="button" class="mode-btn" data-kind-btn="image">图片</button>
+          </div>
+          <select class="sort-select" id="sortToggle" aria-label="排序"><option value="new">最近修改</option><option value="old">最早修改</option><option value="name">名称 A–Z</option><option value="size">文件大小</option><option value="kind">媒体类型</option></select>
+          <details class="display-options" id="displayOptions"><summary aria-label="显示设置"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4h14v2H3zm0 5h14v2H3zm0 5h14v2H3z"/><circle cx="7" cy="5" r="3"/><circle cx="13" cy="10" r="3"/><circle cx="8" cy="15" r="3"/></svg><span>显示</span></summary><div class="display-panel">
+          <span class="settings-label">浏览范围</span>
           <div class="modes modes-sm" role="group" aria-label="列出内容">
-            <button type="button" class="mode-btn is-active" data-content-btn="current" title="只列当前这一层的文件，平铺">当前</button>
-            <button type="button" class="mode-btn" data-content-btn="all" title="递归列出这个目录及其所有子目录的文件，平铺成一屏">全部</button>
-            <button type="button" class="mode-btn" data-content-btn="folder" title="递归列出整个子树，按目录分组，每组可折叠">分组</button>
+            <button type="button" class="mode-btn is-active" data-content-btn="current" title="只列当前这一层">当前目录</button>
+            <button type="button" class="mode-btn" data-content-btn="all" title="包含所有子目录">含子目录</button>
+            <button type="button" class="mode-btn" data-content-btn="folder" title="按目录分组">分组</button>
             <!-- 只属于「分组」的两个动作：跟着它自己那一组，别再单独占一行。 -->
             <button type="button" class="mode-btn mode-mini" id="groupExpand" title="展开所有分组" hidden>展开</button>
             <button type="button" class="mode-btn mode-mini" id="groupCollapse" title="折叠所有分组，只留第一层" hidden>折叠</button>
           </div>
-          <div class="modes modes-sm" role="group" aria-label="图片 / 视频">
-            <button type="button" class="mode-btn is-active" data-kind-btn="all" title="图片和视频都显示">全部</button>
-            <button type="button" class="mode-btn" data-kind-btn="video" title="只显示视频">视频</button>
-            <button type="button" class="mode-btn" data-kind-btn="image" title="只显示图片">图片</button>
-          </div>
+          <span class="settings-label">布局</span>
           <div class="modes modes-sm" role="group" aria-label="视图">
             <button type="button" class="mode-btn is-active" data-view-btn="grid" title="网格视图 (V 切换)">网格</button>
             <button type="button" class="mode-btn" data-view-btn="list" title="列表视图 (V 切换)">列表</button>
           </div>
+          <span class="settings-label">封面大小</span>
           <!-- 网格瓦片大小：只影响网格，列表视图里整组藏起来（见 CSS）。 -->
           <div class="modes modes-sm" id="tileGroup" role="group" aria-label="网格大小">
             <button type="button" class="mode-btn" data-tile-btn="0" title="小图：一屏放更多">小</button>
             <button type="button" class="mode-btn is-active" data-tile-btn="1" title="中图（默认）">中</button>
             <button type="button" class="mode-btn" data-tile-btn="2" title="大图：封面更大、看得更清">大</button>
           </div>
-          <button type="button" class="icon-btn" id="sortToggle" title="切换排序 (S)" aria-label="切换排序">
-            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5h12v2H4zM4 9h8v2H4zM4 13h5v2H4z"/></svg>
-          </button>
+          <label class="preview-setting"><input type="checkbox" id="previewEnabled" checked>视频动态预览</label>
+          </div></details>
         </div>
       </section>
 
       <div class="summary" id="summary"></div>
+      <div class="load-status" id="loadStatus" role="status" aria-live="polite" hidden><span id="loadStatusText"></span><button type="button" id="loadRetry" hidden>重试</button></div>
     </div>
     <section class="grid" id="grid" aria-label="媒体"></section>
     <div class="more" id="more"></div>
@@ -117,6 +127,8 @@
     </div>
   </main>
 </div>
+<button type="button" id="directoryBackdrop" class="directory-backdrop" aria-label="关闭媒体目录" hidden></button>
+<nav class="mobile-dock" aria-label="媒体模式"><button type="button" id="mobileLibrary" class="is-active"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 3h6v6H3zm8 0h6v6h-6zM3 11h6v6H3zm8 0h6v6h-6z"/></svg>媒体库</button><button type="button" id="mobileFeed"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 3l10 7-10 7z"/></svg>刷视频</button><button type="button" id="mobileDirectories"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 5h6l2 2h8v10H2z"/></svg>目录</button></nav>
 
 <!-- ── 图片查看器 ─────────────────────────────────────────────────────── -->
 <!-- 默认是页面上的一个窗口（四周留白、圆角、有阴影），点「页面全屏」才铺满整页。 -->
@@ -152,6 +164,7 @@
   <div class="player-window" id="playerWindow">
     <!-- 关闭与全屏相关的东西只放这条顶部浮动条，底下的控件条不再重复。 -->
     <div class="player-top" id="playerTop">
+      <span class="feed-label" id="feedLabel" hidden>连续观看</span>
       <button type="button" class="icon-btn ghost" id="btnPageFullscreen" title="页面全屏（铺满这一页）" aria-label="页面全屏">⤢</button>
       <button type="button" class="icon-btn ghost" id="btnFullscreen" title="全屏 (F)" aria-label="全屏">
         <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 3h6v2H5v4H3zM11 3h6v6h-2V5h-4zM3 11h2v4h4v2H3zM15 11h2v6h-6v-2h4z"/></svg>
@@ -166,6 +179,9 @@
     <div class="player-peek" id="playerPeek" hidden><span class="peek-name" id="playerPeekName"></span></div>
 
     <video id="video" playsinline preload="metadata" crossorigin="anonymous"></video>
+    <img id="scrubImage" class="scrub-image" alt="" hidden aria-hidden="true">
+    <video id="nextVideo" muted playsinline preload="none" aria-hidden="true" hidden></video>
+    <div class="feed-actions" id="feedActions" hidden><button type="button" id="feedPrev" aria-label="上一个视频">↑</button><span id="feedPosition"></span><button type="button" id="feedNext" aria-label="下一个视频">↓</button></div>
 
     <div class="player-center" id="playerCenter">
       <button type="button" class="big-btn" id="bigPlay" aria-label="播放/暂停">
@@ -175,6 +191,7 @@
     </div>
     <div class="player-spinner" id="playerSpinner" hidden><span></span></div>
     <div class="player-toast" id="playerToast" hidden></div>
+    <div class="player-error" id="playerError" hidden role="alert"><p id="playerErrorText"></p><button type="button" id="playerRetry">重新播放</button></div>
 
     <div class="player-chrome" id="playerChrome">
       <div class="player-title">
@@ -182,8 +199,8 @@
         <span class="player-sub" id="playerSub"></span>
       </div>
 
-      <div class="progress" id="progress" role="slider" tabindex="0" aria-label="播放进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-        <div class="progress-track">
+      <div class="progress" id="progress" role="slider" tabindex="0" aria-label="播放进度" aria-orientation="horizontal" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div class="progress-track" id="progressTrack">
           <div class="progress-buffer" id="progressBuffer"></div>
           <div class="progress-played" id="progressPlayed"></div>
           <div class="progress-thumb" id="progressThumb"></div>
@@ -192,22 +209,22 @@
       </div>
 
       <div class="controls">
+        <button type="button" class="icon-btn ghost seek-step" id="btnBack10" title="后退 10 秒 (J)" aria-label="后退 10 秒"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M7 7a10 10 0 1 1-3 9M7 2v6H1"/><text x="14" y="18" text-anchor="middle" stroke="none" fill="currentColor" font-size="10" font-weight="600">10</text></svg></button>
         <button type="button" class="icon-btn ghost" id="btnPlay" title="播放 / 暂停 (空格)" aria-label="播放/暂停">
           <svg class="icon-play" viewBox="0 0 20 20" aria-hidden="true"><path d="M6 4l10 6-10 6z"/></svg>
           <svg class="icon-pause" viewBox="0 0 20 20" aria-hidden="true"><path d="M5 4h4v12H5zM11 4h4v12h-4z"/></svg>
         </button>
-        <button type="button" class="icon-btn ghost" id="btnPrev" title="上一个 (← / ↑)" aria-label="上一个">⏮</button>
-        <button type="button" class="icon-btn ghost" id="btnNext" title="下一个 (→ / ↓)" aria-label="下一个">⏭</button>
-        <button type="button" class="icon-btn ghost" id="btnBack10" title="后退 10 秒 (J)" aria-label="后退 10 秒">↺</button>
-        <button type="button" class="icon-btn ghost" id="btnFwd10" title="前进 10 秒 (L)" aria-label="前进 10 秒">↻</button>
+        <button type="button" class="icon-btn ghost seek-step" id="btnFwd10" title="前进 10 秒 (L)" aria-label="前进 10 秒"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M21 7a10 10 0 1 0 3 9M21 2v6h6"/><text x="14" y="18" text-anchor="middle" stroke="none" fill="currentColor" font-size="10" font-weight="600">10</text></svg></button>
+        <button type="button" class="icon-btn ghost" id="btnPrev" title="上一个文件" aria-label="上一个">⏮</button>
+        <button type="button" class="icon-btn ghost" id="btnNext" title="下一个文件" aria-label="下一个">⏭</button>
 
         <div class="volume">
           <button type="button" class="icon-btn ghost" id="btnMute" title="静音 (M)" aria-label="静音"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.2 8h2.4L9.8 5.4v9.2L6.6 12H4.2z"/><path d="M12.3 7.7a2.9 2.9 0 0 1 0 4.6M14.1 6.2a5 5 0 0 1 0 7.6" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round"/></svg></button>
           <input id="volumeRange" type="range" min="0" max="1" step="0.01" value="1" aria-label="音量">
         </div>
 
-        <span class="time" id="timeLabel">0:00 / 0:00</span>
-        <span class="live-badge" id="statLive" hidden>实时</span>
+        <div class="timeline-meta"><span class="time" id="timeLabel">0:00 / 0:00</span>
+        <span class="live-badge" id="statLive" hidden>时长未知</span></div>
 
         <div class="controls-right">
           <span class="stat" id="statBasic"></span>
@@ -219,18 +236,23 @@
             <button type="button" class="icon-btn ghost" id="btnSpeed" title="倍速" aria-label="倍速"><span id="speedLabel">1×</span></button>
             <div class="menu" id="speedMenu" hidden></div>
           </div>
-          <button type="button" class="icon-btn ghost" id="btnStats" title="播放统计 (I)" aria-label="播放统计">{ }</button>
-          <button type="button" class="icon-btn ghost" id="btnLoop" title="单个循环 (U)" aria-label="循环">⟲</button>
+          <div class="menu-wrap player-more-wrap">
+          <button type="button" class="icon-btn ghost" id="btnPlayerMore" aria-label="更多播放选项" aria-expanded="false" aria-controls="playerMoreMenu">•••</button>
+          <div class="menu player-more-menu" id="playerMoreMenu" hidden aria-label="更多播放选项">
+          <button type="button" class="icon-btn ghost" id="btnStats" title="播放统计 (I)" aria-label="播放统计">播放信息</button>
+          <button type="button" class="icon-btn ghost" id="btnLoop" title="单个循环 (U)" aria-label="循环">单个循环</button>
           <!-- 播放顺序：顺序 / 随机。单色字形（不是 🔀 那个彩色 emoji）：非顺序
                播放时靠 .is-on 的强调色一眼看出来。手机上这一枚最常用，别跟着
                不常用的按钮一起藏起来（见 CSS 的移动端规则）。 -->
-          <button type="button" class="icon-btn ghost" id="btnOrder" title="顺序播放（点一下改成随机）" aria-label="播放顺序">⇄</button>
+          <button type="button" class="icon-btn ghost" id="btnOrder" title="顺序播放（点一下改成随机）" aria-label="播放顺序">随机播放</button>
           <!-- 当前这条设为全屏壁纸（图片 / 视频都行）。手机上跟着其他不常用的
                一起藏起来，见 CSS 的移动端规则。 -->
-          <button type="button" class="icon-btn ghost" id="btnWallpaper" title="设为全屏壁纸" aria-label="设为全屏壁纸"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 3h14v14H3zm1.5 1.5v11h11v-11z"/><path d="M5.6 12.8l2.5-2.5 1.9 1.9 2.2-2.2 2.5 2.5v2H5.6z"/><circle cx="7.6" cy="7.4" r="1.3"/></svg></button>
-          <button type="button" class="icon-btn ghost" id="btnSnapshot" title="截取当前帧 (P)" aria-label="截图"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3h6l1 2h3v12H3V5h3zM10 8a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7zm0 1.6a1.9 1.9 0 1 1 0 3.8 1.9 1.9 0 0 1 0-3.8z"/></svg></button>
-          <button type="button" class="icon-btn ghost" id="btnPip" title="画中画 (Q)" aria-label="画中画">◳</button>
-          <button type="button" class="icon-btn ghost" id="btnDownload" title="下载 (D)" aria-label="下载">⤓</button>
+          <button type="button" class="icon-btn ghost" id="btnWallpaper" title="设为全屏壁纸" aria-label="设为全屏壁纸">设为壁纸</button>
+          <button type="button" class="icon-btn ghost" id="btnSnapshot" title="截取当前帧 (P)" aria-label="截图">保存当前帧</button>
+          <button type="button" class="icon-btn ghost" id="btnPip" title="画中画 (Q)" aria-label="画中画">画中画</button>
+          <button type="button" class="icon-btn ghost" id="btnDownload" title="下载 (D)" aria-label="下载">下载原文件</button>
+          </div>
+          </div>
         </div>
       </div>
     </div>

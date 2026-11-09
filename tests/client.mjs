@@ -347,10 +347,12 @@ checkEqual('重置的字段是 roots', calls.at(-1)?.[1]?.field, 'roots')
 // ── 交互：本机壁纸 ─────────────────────────────────────────────────────────
 
 check('无本机壁纸时不显示该行', !JSON.stringify(tree).includes('reel_localWall'))
-globalThis.localStorage.getItem = () => JSON.stringify({ key: 'r0/照片/wall.jpg' })
+globalThis.localStorage.getItem = () => JSON.stringify({ key: 'r5000000000000001/照片/wall.jpg' })
 const localTree = render()
 check('有本机壁纸时显示该行', JSON.stringify(localTree).includes('reel_localWall'))
-check('展示的是那个 key', JSON.stringify(localTree).includes('r0/照片/wall.jpg'))
+check('展示的是那个 key', JSON.stringify(localTree).includes('r5000000000000001/照片/wall.jpg'))
+globalThis.localStorage.getItem = () => JSON.stringify({ key: 'r0/照片/wall.jpg' })
+check('旧位置型壁纸不再推荐给设置', !JSON.stringify(render()).includes('reel_localWall'))
 
 // ── 释放 ───────────────────────────────────────────────────────────────────
 

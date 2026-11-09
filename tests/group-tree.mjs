@@ -164,6 +164,42 @@ checkEqual('总数只算出现的根', libPartial.total, 1)
 
 // ── 结果 ──────────────────────────────────────────────────────────────────
 
+// 检查实际 DOM 的先后顺序：每一层目录分组都要在独立媒体前面。
+{
+  class GroupNode {
+    children = []
+    dataset = {}
+    className = ''
+    hidden = false
+    attributes = new Map()
+    listeners = new Map()
+    append(...nodes) { this.children.push(...nodes) }
+    appendChild(node) { this.children.push(node); return node }
+    setAttribute(key, value) { this.attributes.set(key, value) }
+    addEventListener(key, callback) { this.listeners.set(key, callback) }
+  }
+  const sandbox = {
+    document: { createElement: () => new GroupNode() },
+    ICON_FOLDER: '', ICON_FOLDER_OPEN: '',
+    computeMedia: (files) => files,
+    buildCard: (item) => ({ className: 'card', item }),
+    groupOpen: new Set(), groupTouched: false,
+    navigate() {},
+    el: { empty: { hidden: false } },
+    state: { key: 'r0/Photos', listing, scanned: items },
+    isLibraryKey: () => false,
+    renderFlatGrid() {},
+  }
+  runInNewContext(`${extract('buildFolderTree')}\n${extract('buildGroup')}\nconst defaultOpenGroups = tree => new Set([tree.key, ...tree.children.map(child => child.key)]);\nconst buildLibraryTree = () => null;\n${extract('renderGrouped')}\nthis.buildGroup = buildGroup; this.renderGrouped = renderGrouped`, sandbox)
+  const rendered = sandbox.buildGroup(tree, new Set(['r0/Photos', 'r0/Photos/2024']))
+  const body = rendered.children[1]
+  checkEqual('根目录分组在当前层媒体之前', body.children.map(node => node.className), ['folder-group is-child', 'folder-group is-child', 'group-grid'])
+  checkEqual('子目录每一层也先目录再媒体', body.children[0].children[1].children.map(node => node.className), ['folder-group is-child', 'group-grid'])
+  checkEqual('独立媒体仍然显示在当前目录组内', body.children.at(-1).children.map(card => card.item.name), ['封面.jpg'])
+  check('空目录之后进入有媒体的分组仍然成功', sandbox.renderGrouped(new GroupNode()))
+  check('有媒体的分组会收起之前目录的空状态', sandbox.el.empty.hidden)
+}
+
 if (failures.length === 0) {
   console.log(`通过 ${passes} 项\n全部通过 ✓`)
 } else {
